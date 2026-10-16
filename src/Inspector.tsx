@@ -24,6 +24,7 @@ import {
   type Role,
   type Snapshot,
 } from "./engine";
+import { ResilienceControls } from "./ResilienceControls";
 import TechnologyInspector from "./TechnologyInspector";
 import { catalog } from "./board";
 import { icons } from "./visuals";
@@ -396,6 +397,14 @@ export default function Inspector({
                   healthy targets.
                 </p>
               </>
+            )}
+            {role === "backend" && (
+              <ResilienceControls
+                id={node.id}
+                config={config}
+                state={state}
+                onConfig={onConfig}
+              />
             )}
             {role === "balancer" && (
               <>

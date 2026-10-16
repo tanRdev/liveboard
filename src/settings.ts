@@ -62,6 +62,20 @@ const schemas: Record<string, Record<string, Rule>> = {
     replicationMs: [0, 60000],
     readCapacity: [1, 100],
   },
+  resilience: {
+    attemptTimeout: [1, 60000],
+    maxRetries: [0, 3],
+    backoffMs: [0, 60000],
+    backoff: ["fixed", "exponential"],
+    breaker: "boolean",
+    failureThreshold: [1, 100],
+    resetMs: [1, 60000],
+  },
+  connection: {
+    latency: [0, 60000],
+    failureEvery: [0, 100],
+    online: "boolean",
+  },
   gateway: {
     technology: ["load-balancer", "api-gateway"],
     rate: [1, 100],
@@ -131,6 +145,26 @@ export function parseSettings(raw: Record<string, unknown>, config: Config) {
       if (key === "consumerOverrides")
         config.consumerOverrides[id] = valid as Partial<ConsumerConfig>;
       else config.workerOverrides[id] = valid as Partial<WorkerConfig>;
+    }
+  }
+  for (const [key, schema] of [
+    ["resilienceOverrides", "resilience"],
+    ["connectionOverrides", "connection"],
+  ] as const) {
+    if (raw[key] === undefined) continue;
+    if (!object(raw[key]) || Object.keys(raw[key]).length > 4)
+      throw new Error(`Invalid ${key}.`);
+    for (const [id, value] of Object.entries(raw[key])) {
+      if (
+        !(
+          key === "resilienceOverrides"
+            ? /^backend(?:-[2-4])?$/
+            : /^backend(?:-[2-4])?-database$/
+        ).test(id)
+      )
+        throw new Error(`Invalid ${schema} identity.`);
+      const valid = validate(value, schema);
+      Object.assign(config[key], { [id]: valid });
     }
   }
 }

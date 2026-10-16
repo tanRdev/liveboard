@@ -1,4 +1,13 @@
 import {
+  CircuitBank,
+  connectionDefaults,
+  resilienceDefaults,
+  retryDelay,
+  type CircuitState,
+  type ResilienceSettings,
+  type ConnectionSettings,
+} from "./resilience";
+import {
   cacheDefaults,
   readCache,
   writeCache,
@@ -74,6 +83,8 @@ export type Transit = {
   request: number;
 };
 export type Config = {
+  resilienceOverrides: Record<string, Partial<ResilienceSettings>>;
+  connectionOverrides: Record<string, Partial<ConnectionSettings>>;
   cache: CacheSettings;
   kafka: KafkaConfig;
   producer: ProducerConfig;
@@ -99,6 +110,8 @@ export type Config = {
   balancer: { policy: "round-robin" | "least-connections"; online: boolean };
 };
 export const defaults: Config = {
+  resilienceOverrides: {},
+  connectionOverrides: {},
   cache: { ...cacheDefaults },
   kafka: { ...kafkaDefaults },
   producer: { ...producerDefaults },
@@ -124,6 +137,18 @@ export const defaults: Config = {
   roles: ["client", "backend", "cache", "database"],
   links: ["client-backend", "backend-cache", "backend-database"],
 };
+export function resilienceSettings(
+  config: Config,
+  id: string,
+): ResilienceSettings {
+  return { ...resilienceDefaults, ...config.resilienceOverrides?.[id] };
+}
+export function connectionSettings(
+  config: Config,
+  id: string,
+): ConnectionSettings {
+  return { ...connectionDefaults, ...config.connectionOverrides?.[id] };
+}
 export function backendSettings(config: Config, id: string): BackendSettings {
   return {
     concurrency: config.concurrency,
@@ -149,6 +174,7 @@ export function components(config: Config): Component[] {
 }
 export function initialSnapshot(): Snapshot {
   return {
+    circuits: {},
     kafka: emptyKafka(),
     queueLab: emptyQueue(),
     database: emptyDatabase(),
@@ -201,6 +227,10 @@ export type Result = {
   trace: Trace[];
 };
 type Job = {
+  attempt?: number;
+  attemptDeadline?: number;
+  generation?: number;
+  dependencyFault?: boolean;
   id: number;
   path: string;
   start: number;
@@ -217,6 +247,7 @@ type Job = {
   trace: Trace[];
 };
 export type Snapshot = {
+  circuits: Record<string, CircuitState>;
   now: number;
   events: Trace[];
   results: Result[];
@@ -258,6 +289,7 @@ export class Engine {
   eventId = 1;
   edgeUntil = 0;
   roundRobin = 0;
+  circuits = new CircuitBank();
   kafka = new KafkaLab((event) => this.labEvent(event.edge, event.reverse));
   queueLab = new QueueLab((event) => this.labEvent(event.edge, event.reverse));
   database = new DatabaseLab();
@@ -270,6 +302,7 @@ export class Engine {
       ].slice(-80);
   }
   syncLabs() {
+    this.state.circuits = this.circuits.states;
     this.state.kafka = this.kafka.state;
     this.state.queueLab = this.queueLab.state;
     this.state.database = this.database.state;
@@ -311,7 +344,7 @@ export class Engine {
     });
     this.state.cacheLog = this.state.cacheLog.slice(-50);
   }
-  constructor() {
+  constructor(private onResult: (result: Result) => void = () => {}) {
     this.database.configure(this.config.database, this.config.records);
     this.syncLabs();
     this.refreshBackends();
@@ -362,6 +395,11 @@ export class Engine {
     this.database.configure(this.config.database, this.config.records);
     this.gateway.configure(this.config.gateway, this.state.now);
     this.syncLabs();
+    const ids = new Set(
+      parts.filter((c) => c.role === "backend").map((c) => c.id),
+    );
+    for (const id of Object.keys(this.circuits.states))
+      if (!ids.has(id)) delete this.circuits.states[id];
     this.refreshBackends();
     const removed = this.running.filter(
       (job) => !this.state.backends[job.backendId!],
@@ -624,7 +662,7 @@ export class Engine {
       this.emit(job, job.backendId ?? "client", body.error, "error");
     const duration = this.state.now - job.start;
     const wait = job.startedAt - job.start;
-    this.state.results.unshift({
+    const result: Result = {
       id: job.id,
       path: job.path,
       status,
@@ -635,7 +673,8 @@ export class Engine {
       backendId: job.backendId,
       backendName: job.backendName,
       trace: job.trace,
-    });
+    };
+    this.state.results.unshift(result);
     this.state.results = this.state.results.slice(0, 100);
     if (job.backendId && this.state.backends[job.backendId]) {
       this.state.backends[job.backendId].completed++;
@@ -655,9 +694,12 @@ export class Engine {
         : `client-${job.backendId ?? "backend"}`,
       true,
     );
+    this.onResult(result);
   }
   finish(status: number, body: unknown, source: string) {
     const job = this.current!;
+    if (job.attemptDeadline !== undefined)
+      this.circuits.cancel(job.backendId!, job.generation ?? 0);
     this.record(job, status, body, source);
     this.running = this.running.filter((active) => active.id !== job.id);
     if (job.backendId && this.state.backends[job.backendId])
@@ -665,13 +707,81 @@ export class Engine {
     this.current = undefined;
     this.startNext();
   }
+  scheduleDatabase(job: Job) {
+    const id = job.backendId!,
+      settings = resilienceSettings(this.config, id),
+      link = connectionSettings(this.config, `${id}-database`);
+    const permit = this.circuits.before(id, settings, this.state.now);
+    if (!permit.allowed) {
+      this.emit(
+        job,
+        id,
+        `Circuit ${this.circuits.get(id).state} · database call rejected`,
+        "error",
+      );
+      this.finish(503, { error: "Database circuit is open" }, "circuit");
+      return;
+    }
+    job.generation = permit.generation;
+    job.attempt = (job.attempt ?? 0) + 1;
+    job.attemptDeadline = this.state.now + settings.attemptTimeout;
+    job.dependencyFault =
+      link.failureEvery > 0 &&
+      this.circuits.get(id).attempts % link.failureEvery === 0;
+    this.emit(
+      job,
+      id,
+      `Database attempt ${job.attempt}${this.circuits.get(id).state === "half-open" ? " · half-open probe" : ""}`,
+    );
+    job.stage = 3;
+    job.due =
+      this.state.now + this.database.delay(this.config.delay) + link.latency;
+  }
+  dependencyFailure(job: Job, status: number, reason: string) {
+    const id = job.backendId!,
+      settings = resilienceSettings(this.config, id);
+    job.attemptDeadline = undefined;
+    this.circuits.failure(id, settings, this.state.now, job.generation ?? 0);
+    this.emit(
+      job,
+      id,
+      `${reason} · attempt ${job.attempt}`,
+      "error",
+      `${id}-database`,
+      true,
+    );
+    if (
+      (job.attempt ?? 1) <= settings.maxRetries &&
+      this.circuits.get(id).state !== "open"
+    ) {
+      const delay = retryDelay(settings, job.attempt ?? 1);
+      if (this.state.now + delay < job.deadline) {
+        this.circuits.get(id).retries++;
+        this.emit(
+          job,
+          id,
+          `Retry in ${delay} ms · ${settings.backoff} backoff`,
+        );
+        job.stage = 9;
+        job.due = this.state.now + delay;
+        return;
+      }
+    }
+    this.finish(
+      status,
+      { error: reason, attempts: job.attempt },
+      status === 504 ? "timeout" : "database",
+    );
+  }
   nextTime() {
     return Math.min(
       this.nextArrival,
       this.kafka.nextTime(),
       this.queueLab.nextTime(),
       this.database.nextTime(),
-      ...this.running.map((job) => Math.min(job.due, job.deadline)),
+      ...this.running.map((job) =>
+        Math.min(job.due, job.deadline, job.attemptDeadline ?? Infinity),
+      ),
     );
   }
   step() {
@@ -696,10 +806,15 @@ export class Engine {
     }
     const job = [...this.running].sort(
       (a, b) =>
-        Math.min(a.due, a.deadline) - Math.min(b.due, b.deadline) ||
+        Math.min(a.due, a.deadline, a.attemptDeadline ?? Infinity) -
+          Math.min(b.due, b.deadline, b.attemptDeadline ?? Infinity) ||
         a.id - b.id,
     )[0];
-    if (!job || this.nextArrival < Math.min(job.due, job.deadline)) {
+    if (
+      !job ||
+      this.nextArrival <
+        Math.min(job.due, job.deadline, job.attemptDeadline ?? Infinity)
+    ) {
       this.send(this.state.traffic.path);
       this.nextArrival += 1000 / this.state.traffic.rate;
       return;
@@ -707,6 +822,13 @@ export class Engine {
     this.current = job;
     const j = job;
     if (this.state.now >= j.deadline) {
+      if (j.attemptDeadline !== undefined)
+        this.circuits.failure(
+          j.backendId!,
+          resilienceSettings(this.config, j.backendId!),
+          this.state.now,
+          j.generation ?? 0,
+        );
       this.finish(504, { error: "Backend dependency timed out" }, "timeout");
       return;
     }
@@ -733,6 +855,17 @@ export class Engine {
         { error: "Load balancer response path unavailable" },
         "topology",
       );
+      return;
+    }
+    if (
+      j.attemptDeadline !== undefined &&
+      this.state.now >= j.attemptDeadline
+    ) {
+      this.dependencyFailure(j, 504, "Database call timed out");
+      return;
+    }
+    if (j.stage === 9) {
+      this.scheduleDatabase(j);
       return;
     }
     if (j.stage === 0) {
@@ -766,8 +899,7 @@ export class Engine {
         !this.config.cache.online
       ) {
         this.emit(j, j.backendId!, "Cache is disconnected. Read database.");
-        j.stage = 3;
-        j.due = this.state.now + this.database.delay(this.config.delay);
+        this.scheduleDatabase(j);
         return;
       }
       this.emit(j, "cache", `Lookup ${j.key}`, "info", `${j.backendId}-cache`);
@@ -784,8 +916,7 @@ export class Engine {
           j.backendId!,
           "Cache disconnected during lookup. Read database.",
         );
-        j.stage = 3;
-        j.due = this.state.now + this.database.delay(this.config.delay);
+        this.scheduleDatabase(j);
         return;
       }
       const entry = readCache(this.state, j.key, this.state.now);
@@ -811,14 +942,15 @@ export class Engine {
           `${j.backendId}-cache`,
           true,
         );
-        j.stage = 3;
-        j.due = this.state.now + this.database.delay(this.config.delay);
+        this.scheduleDatabase(j);
       }
     } else if (j.stage === 3) {
       if (
         !this.hasRole("database") ||
         !connected("database") ||
-        !this.config.online
+        !this.config.online ||
+        !connectionSettings(this.config, `${j.backendId}-database`).online ||
+        j.dependencyFault
       ) {
         this.emit(
           j,
@@ -827,7 +959,7 @@ export class Engine {
           "error",
           `${j.backendId}-database`,
         );
-        this.finish(503, { error: "Database unavailable" }, "database");
+        this.dependencyFailure(j, 503, "Database unavailable");
         return;
       }
       this.state.reads++;
@@ -839,20 +971,23 @@ export class Engine {
         `${j.backendId}-database`,
       );
       j.stage = 4;
-      j.due = this.state.now + 100;
+      j.due =
+        this.state.now +
+        100 +
+        connectionSettings(this.config, `${j.backendId}-database`).latency;
     } else if (j.stage === 4) {
       if (
         !this.hasRole("database") ||
         !connected("database") ||
-        !this.config.online
+        !this.config.online ||
+        !connectionSettings(this.config, `${j.backendId}-database`).online ||
+        j.dependencyFault
       ) {
-        this.finish(
-          503,
-          { error: "Database unavailable during read" },
-          "database",
-        );
+        this.dependencyFailure(j, 503, "Database unavailable during read");
         return;
       }
+      j.attemptDeadline = undefined;
+      this.circuits.success(j.backendId!, j.generation ?? 0);
       const read = this.database.read(j.path.split("/").pop()!, this.state.now);
       this.emit(j, "database", this.database.state.reply);
       if (read.error) {

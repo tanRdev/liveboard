@@ -1,13 +1,48 @@
+import { ExperimentRunner, type ExperimentSpec } from "./experiments";
 import { Engine, type Config } from "./engine";
 let engine = new Engine();
 let playing = true;
 let speed = 1;
+let experiment: { id: string; runner: ExperimentRunner } | undefined;
+function pumpExperiment() {
+  const current = experiment;
+  if (!current) return;
+  try {
+    for (let i = 0; i < 30 && !current.runner.finished; i++)
+      current.runner.tick();
+    if (experiment !== current) return;
+    if (current.runner.finished) {
+      postMessage({
+        type: "experimentComplete",
+        id: current.id,
+        report: current.runner.report,
+      });
+      experiment = undefined;
+    } else {
+      postMessage({
+        type: "experimentProgress",
+        id: current.id,
+        progress: current.runner.progress(),
+      });
+      setTimeout(pumpExperiment, 0);
+    }
+  } catch (error) {
+    postMessage({
+      type: "experimentError",
+      id: current.id,
+      error: error instanceof Error ? error.message : "Experiment failed",
+    });
+    experiment = undefined;
+  }
+}
 function publish() {
-  postMessage(engine.state);
+  postMessage({ type: "snapshot", state: engine.state });
 }
 onmessage = (
   event: MessageEvent<{
     type: string;
+    spec?: ExperimentSpec;
+    id?: string;
     config?: Config;
     path?: string;
     count?: number;
@@ -20,6 +55,24 @@ onmessage = (
 ) => {
   const message = event.data;
   switch (message.type) {
+    case "experiment":
+      try {
+        experiment = {
+          id: message.id!,
+          runner: new ExperimentRunner(message.config!, message.spec!),
+        };
+        setTimeout(pumpExperiment, 0);
+      } catch (error) {
+        postMessage({
+          type: "experimentError",
+          id: message.id,
+          error: error instanceof Error ? error.message : "Experiment failed",
+        });
+      }
+      return;
+    case "cancelExperiment":
+      experiment = undefined;
+      return;
     case "produce":
       engine.produce(message.count);
       break;

@@ -14,6 +14,7 @@ import {
 import { Clock3 } from "lucide-react";
 import {
   backendSettings,
+  resilienceSettings,
   consumerSettings,
   workerSettings,
   type Config,
@@ -106,6 +107,19 @@ export function ComponentNode({ id, data, selected }: NodeProps) {
                   : `${settings.concurrency} execution ${settings.concurrency === 1 ? "slot" : "slots"}`}
               </span>
             </div>
+            {(resilienceSettings(config, id).breaker ||
+              resilienceSettings(config, id).maxRetries > 0) && (
+              <div
+                className={`backend-circuit ${state.circuits[id]?.state ?? "closed"}`}
+              >
+                <span>
+                  {resilienceSettings(config, id).breaker
+                    ? `Circuit ${state.circuits[id]?.state ?? "closed"}`
+                    : "Retries enabled"}
+                </span>
+                <span>{state.circuits[id]?.retries ?? 0} retries</span>
+              </div>
+            )}
             {queued > 0 && (
               <div className="queue-bar">
                 {Array.from({ length: Math.min(queued, 16) }, (_, i) => (

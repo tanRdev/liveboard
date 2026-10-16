@@ -7,7 +7,7 @@ import {
   type Role,
   type Snapshot,
 } from "./engine";
-function Option({
+export function Option({
   label,
   value,
   choices,
@@ -39,7 +39,7 @@ function Option({
     </label>
   );
 }
-function Numeric({
+export function Numeric({
   label,
   value,
   min = 1,

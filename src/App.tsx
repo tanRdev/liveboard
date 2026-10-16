@@ -57,16 +57,28 @@ import {
   canConnect,
   serializeBoard,
   parseBoard,
+  executionConfig,
   type Board,
   type Scenario,
 } from "./board";
 import { icons } from "./visuals";
 import { technology } from "./settings";
+const InterviewPanel = lazy(() => import("./InterviewPanel"));
 const LabPanel = lazy(() => import("./LabPanel"));
+import { briefs, defaultBrief, type InterviewBrief } from "./interview";
+import type { ExperimentSpec, ExperimentReport } from "./experiments";
+import type { RecordedRun, ExperimentStatus } from "./InterviewPanel";
+import useInterviewClock from "./useInterviewClock";
+import { ConnectionInspector } from "./ResilienceControls";
 import Inspector from "./Inspector";
 const edgeTypes = { traffic: TrafficEdge };
 const nodeTypes = { component: ComponentNode };
 function boardPrompt(nodes: Node[], config: Config): [string, string] {
+  if (Object.keys(config.connectionOverrides).length)
+    return [
+      "DEPENDENCY RESILIENCE",
+      "Can retries recover a failure without exhausting the request budget?",
+    ];
   if (nodes.some((n) => n.data.role === "stream"))
     return [
       "KAFKA EVENT STREAM",
@@ -115,6 +127,19 @@ function App() {
     ...defaults,
     ...saved?.config,
   });
+  const [brief, setBrief] = useState<InterviewBrief>(
+    () => saved?.interview ?? structuredClone(defaultBrief),
+  );
+  const clock = useInterviewClock(brief.minutes);
+  const [runs, setRuns] = useState<RecordedRun[]>([]);
+  const [experiment, setExperiment] = useState<ExperimentStatus>({
+    running: false,
+    progress: 0,
+    error: "",
+  });
+  const pendingRun = useRef<{ id: string; board: Board } | undefined>(
+    undefined,
+  );
   const [title, setTitle] = useState(saved?.title || "User profile API");
   const [state, setState] = useState<Snapshot>(initialSnapshot);
   const [selection, setSelection] = useState("cache");
@@ -137,7 +162,33 @@ function App() {
       type: "module",
     });
     worker.current = w;
-    w.onmessage = (e) => setState(e.data);
+    w.onmessage = (e) => {
+      const data = e.data;
+      if (data.type === "snapshot") {
+        setState(data.state);
+        return;
+      }
+      if (!pendingRun.current || data.id !== pendingRun.current.id) return;
+      if (data.type === "experimentProgress")
+        setExperiment({ running: true, progress: data.progress, error: "" });
+      if (data.type === "experimentComplete") {
+        const completed = pendingRun.current;
+        setRuns((current) => [
+          ...current.slice(-3),
+          {
+            id: completed.id,
+            board: completed.board,
+            report: data.report as ExperimentReport,
+          },
+        ]);
+        pendingRun.current = undefined;
+        setExperiment({ running: false, progress: 100, error: "" });
+      }
+      if (data.type === "experimentError") {
+        pendingRun.current = undefined;
+        setExperiment({ running: false, progress: 0, error: data.error });
+      }
+    };
     return () => w.terminate();
   }, []);
   useEffect(() => {
@@ -182,6 +233,7 @@ function App() {
     return () => clearTimeout(timer);
   }, [toast]);
   const selectedNode = nodes.find((n) => n.id === selection);
+  const selectedEdge = edges.find((e) => e.id === selection);
   const fileInput = useRef<HTMLInputElement>(null);
   const [focused, setFocused] = useState(false);
   const boardDocument = (): Board => ({
@@ -190,9 +242,11 @@ function App() {
     edges,
     config,
     title,
+    interview: brief,
   });
   const hasClient = nodes.some((n) => n.data.role === "client");
-  const executionTab = hasClient ? tab : "Technology lab";
+  const executionTab =
+    hasClient || tab === "Interview" ? tab : "Technology lab";
   const busy =
     state.active ||
     state.kafka.active > 0 ||
@@ -212,6 +266,27 @@ function App() {
     traceResult?.path ??
     events.find((event) => event.text.startsWith("GET "))?.text.split(" ")[1] ??
     path;
+  const runExperiment = (spec: ExperimentSpec) => {
+    try {
+      const board = parseBoard(serializeBoard(boardDocument()));
+      const id = crypto.randomUUID();
+      pendingRun.current = { id, board };
+      setExperiment({ running: true, progress: 0, error: "" });
+      message("experiment", { id, config: executionConfig(board), spec });
+    } catch (error) {
+      setExperiment({
+        running: false,
+        progress: 0,
+        error:
+          error instanceof Error ? error.message : "Invalid experiment setup",
+      });
+    }
+  };
+  const cancelExperiment = () => {
+    pendingRun.current = undefined;
+    message("cancelExperiment");
+    setExperiment({ running: false, progress: 0, error: "" });
+  };
   const save = () => {
     try {
       const text = serializeBoard(boardDocument());
@@ -271,6 +346,7 @@ function App() {
     );
     setEdges(board.edges);
     setConfig(board.config);
+    if (board.interview) setBrief(board.interview);
     setTitle(board.title);
     setSelection(
       board.nodes.find((n) => n.data.role === "balancer")?.id ??
@@ -293,6 +369,7 @@ function App() {
       queue: "queue",
       database: "database",
       gateway: "balancer",
+      resilience: "backend",
     };
     if (focus[kind]) setSelection(focus[kind]!);
     setToast(
@@ -366,7 +443,16 @@ function App() {
       animated: active,
       className: active ? "edge-active" : "",
       style: {
-        stroke: active ? "#2d8b67" : "#b6c1bc",
+        stroke:
+          config.connectionOverrides[edge.id]?.online === false
+            ? "#c17664"
+            : active
+              ? "#2d8b67"
+              : "#b6c1bc",
+        strokeDasharray:
+          config.connectionOverrides[edge.id]?.online === false
+            ? "5 4"
+            : undefined,
         strokeWidth: active ? 2.5 : 1.5,
       },
     };
@@ -414,6 +500,14 @@ function App() {
           <span className="project-badge">Sandbox</span>
         </div>
         <div className="project-actions">
+          <button
+            className={`plain-button ${tab === "Interview" ? "interview-selected" : ""}`}
+            onClick={() =>
+              setTab(tab === "Interview" ? "Requests" : "Interview")
+            }
+          >
+            Interview workspace
+          </button>
           <button className="plain-button" onClick={() => resetBoard("empty")}>
             <FilePlus2 size={15} /> New board
           </button>
@@ -535,13 +629,14 @@ function App() {
                 ["queue", "Queue delivery lab"],
                 ["database", "Database consistency lab"],
                 ["gateway", "API gateway lab"],
+                ["resilience", "Dependency resilience lab"],
               ] as const
             ).map(([kind, label]) => (
               <button
                 key={kind}
                 onClick={() => {
                   resetBoard(kind);
-                  setTab("Technology lab");
+                  setTab(kind === "resilience" ? "Requests" : "Technology lab");
                 }}
               >
                 {label}
@@ -610,6 +705,7 @@ function App() {
                 );
               }}
               onNodeClick={(_, node) => setSelection(node.id)}
+              onEdgeClick={(_, edge) => setSelection(edge.id)}
               onConnect={(connection) => {
                 const source = nodes.find((n) => n.id === connection.source);
                 const target = nodes.find((n) => n.id === connection.target);
@@ -672,7 +768,7 @@ function App() {
             </div>
           </div>
           <section
-            className={`execution ${["Traffic", "Technology lab"].includes(executionTab) ? "expanded" : ""}`}
+            className={`execution ${executionTab === "Interview" ? "interview-expanded" : ["Traffic", "Technology lab"].includes(executionTab) ? "expanded" : ""}`}
           >
             <div className="execution-heading">
               <div>
@@ -734,55 +830,56 @@ function App() {
                 </button>
               </div>
             </div>
-            {hasClient ? (
-              <div className="request-bar">
-                <span className="method">
-                  GET <ChevronDown size={11} />
-                </span>
-                <input
-                  aria-label="Request path"
-                  value={path}
-                  onChange={(e) => setPath(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
+            {executionTab !== "Interview" &&
+              (hasClient ? (
+                <div className="request-bar">
+                  <span className="method">
+                    GET <ChevronDown size={11} />
+                  </span>
+                  <input
+                    aria-label="Request path"
+                    value={path}
+                    onChange={(e) => setPath(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        message("send", { path, count: traffic });
+                        setRequestId(null);
+                      }
+                    }}
+                  />
+                  <select
+                    aria-label="Traffic volume"
+                    value={traffic}
+                    onChange={(e) => setTraffic(+e.target.value)}
+                  >
+                    <option value="1">Single request</option>
+                    <option value="10">Burst · 10 requests</option>
+                    <option value="50">Burst · 50 requests</option>
+                  </select>
+                  <button
+                    className="send-button"
+                    onClick={() => {
                       message("send", { path, count: traffic });
                       setRequestId(null);
-                    }
-                  }}
-                />
-                <select
-                  aria-label="Traffic volume"
-                  value={traffic}
-                  onChange={(e) => setTraffic(+e.target.value)}
-                >
-                  <option value="1">Single request</option>
-                  <option value="10">Burst · 10 requests</option>
-                  <option value="50">Burst · 50 requests</option>
-                </select>
-                <button
-                  className="send-button"
-                  onClick={() => {
-                    message("send", { path, count: traffic });
-                    setRequestId(null);
-                  }}
-                >
-                  <Play size={13} fill="currentColor" /> Send request
-                </button>
-              </div>
-            ) : (
-              <div className="message-bar">
-                <span>Send an event to connected streams and queues</span>
-                <button onClick={() => message("produce", { count: 1 })}>
-                  Produce 1
-                </button>
-                <button onClick={() => message("produce", { count: 10 })}>
-                  Produce 10
-                </button>
-                <button onClick={() => setSelection("producer")}>
-                  Producer settings
-                </button>
-              </div>
-            )}
+                    }}
+                  >
+                    <Play size={13} fill="currentColor" /> Send request
+                  </button>
+                </div>
+              ) : (
+                <div className="message-bar">
+                  <span>Send an event to connected streams and queues</span>
+                  <button onClick={() => message("produce", { count: 1 })}>
+                    Produce 1
+                  </button>
+                  <button onClick={() => message("produce", { count: 10 })}>
+                    Produce 10
+                  </button>
+                  <button onClick={() => setSelection("producer")}>
+                    Producer settings
+                  </button>
+                </div>
+              ))}
             <div className="execution-tabs">
               {[
                 "Requests",
@@ -790,8 +887,12 @@ function App() {
                 "Response",
                 "Traffic",
                 "Technology lab",
+                "Interview",
               ]
-                .filter((t) => hasClient || t === "Technology lab")
+                .filter(
+                  (t) =>
+                    hasClient || t === "Technology lab" || t === "Interview",
+                )
                 .map((t) => (
                   <button
                     key={t}
@@ -805,7 +906,7 @@ function App() {
                     )}
                   </button>
                 ))}
-              {hasClient && (
+              {hasClient && executionTab !== "Interview" && (
                 <span className="request-stats">
                   {state.queue > 0 && <b>{state.queue} queued · </b>}
                   {state.reads} database reads <span>·</span>{" "}
@@ -819,6 +920,38 @@ function App() {
               )}
             </div>
             <div className="execution-body">
+              {executionTab === "Interview" && (
+                <Suspense
+                  fallback={
+                    <p className="lab-empty">Loading interview workspace…</p>
+                  }
+                >
+                  <InterviewPanel
+                    brief={brief}
+                    onBrief={setBrief}
+                    clock={clock}
+                    status={experiment}
+                    runs={runs}
+                    path={path}
+                    currentConfig={executionConfig(boardDocument())}
+                    onRun={runExperiment}
+                    onCancel={cancelExperiment}
+                    onLoadBrief={(id) => {
+                      const item = briefs.find((b) => b.id === id);
+                      if (!item) return;
+                      loadBoard(scenario(item.scenario));
+                      setBrief({
+                        ...structuredClone(defaultBrief),
+                        prompt: item.prompt,
+                        requirements: item.requirements,
+                      });
+                      clock.reset(defaultBrief.minutes);
+                      setTab("Interview");
+                    }}
+                  />
+                </Suspense>
+              )}
+
               {executionTab === "Technology lab" && (
                 <Suspense
                   fallback={
@@ -973,47 +1106,69 @@ function App() {
             </div>
           </section>
         </main>
-        <Inspector
-          node={selectedNode}
-          nodes={nodes}
-          edges={edges}
-          config={config}
-          state={state}
-          path={path}
-          onPath={setPath}
-          onConfig={setConfig}
-          onSelect={setSelection}
-          onRename={(name) =>
-            setNodes((ns) =>
-              ns.map((n) =>
-                n.id === selection ? { ...n, data: { ...n.data, name } } : n,
-              ),
-            )
-          }
-          onRemove={() => {
-            setConfig((current) => {
-              const backendOverrides = { ...current.backendOverrides };
-              delete backendOverrides[selection];
-              const consumerOverrides = { ...current.consumerOverrides },
-                workerOverrides = { ...current.workerOverrides };
-              delete consumerOverrides[selection];
-              delete workerOverrides[selection];
-              return {
-                ...current,
-                backendOverrides,
-                consumerOverrides,
-                workerOverrides,
-              };
-            });
-            setNodes((ns) => ns.filter((n) => n.id !== selection));
-            setEdges((es) =>
-              es.filter(
-                (e) => e.source !== selection && e.target !== selection,
-              ),
-            );
-          }}
-          onMessage={message}
-        />
+        {selectedEdge ? (
+          <ConnectionInspector
+            id={selectedEdge.id}
+            source={selectedEdge.source}
+            target={selectedEdge.target}
+            config={config}
+            onConfig={setConfig}
+            onRemove={() => {
+              setEdges((current) =>
+                current.filter((edge) => edge.id !== selectedEdge.id),
+              );
+              setSelection("");
+            }}
+          />
+        ) : (
+          <Inspector
+            node={selectedNode}
+            nodes={nodes}
+            edges={edges}
+            config={config}
+            state={state}
+            path={path}
+            onPath={setPath}
+            onConfig={setConfig}
+            onSelect={setSelection}
+            onRename={(name) =>
+              setNodes((ns) =>
+                ns.map((n) =>
+                  n.id === selection ? { ...n, data: { ...n.data, name } } : n,
+                ),
+              )
+            }
+            onRemove={() => {
+              setConfig((current) => {
+                const backendOverrides = { ...current.backendOverrides };
+                delete backendOverrides[selection];
+                const resilienceOverrides = { ...current.resilienceOverrides },
+                  connectionOverrides = { ...current.connectionOverrides };
+                delete resilienceOverrides[selection];
+                delete connectionOverrides[`${selection}-database`];
+                const consumerOverrides = { ...current.consumerOverrides },
+                  workerOverrides = { ...current.workerOverrides };
+                delete consumerOverrides[selection];
+                delete workerOverrides[selection];
+                return {
+                  ...current,
+                  backendOverrides,
+                  consumerOverrides,
+                  workerOverrides,
+                  resilienceOverrides,
+                  connectionOverrides,
+                };
+              });
+              setNodes((ns) => ns.filter((n) => n.id !== selection));
+              setEdges((es) =>
+                es.filter(
+                  (e) => e.source !== selection && e.target !== selection,
+                ),
+              );
+            }}
+            onMessage={message}
+          />
+        )}
       </div>
       <footer className="statusbar">
         <span>

@@ -1,3 +1,4 @@
+import { parseBrief, type InterviewBrief } from "./interview";
 import { MarkerType, type Node, type Edge } from "@xyflow/react";
 import { parseSettings } from "./settings";
 import { defaults, type Config, type Role } from "./engine";
@@ -139,6 +140,7 @@ export type Board = {
   nodes: Node[];
   edges: Edge[];
   config: Config;
+  interview?: InterviewBrief;
 };
 export type Scenario =
   | "cache"
@@ -148,7 +150,8 @@ export type Scenario =
   | "kafka"
   | "queue"
   | "database"
-  | "gateway";
+  | "gateway"
+  | "resilience";
 function buildScenario(kind: Scenario): Board {
   const config = structuredClone(defaults);
   if (kind === "empty")
@@ -188,6 +191,14 @@ function buildScenario(kind: Scenario): Board {
     config.cache.technology = "redis";
     config.cache.maxmemory = 512;
   }
+  if (kind === "resilience") {
+    config.delay = 120;
+    config.concurrency = 4;
+    config.queueLimit = 20;
+    config.timeout = 4000;
+    config.resilienceOverrides = { backend: { attemptTimeout: 800 } };
+    config.connectionOverrides = { "backend-database": { failureEvery: 2 } };
+  }
   if (kind === "database") {
     config.database.technology = "postgresql";
     config.database.readFrom = "replica";
@@ -197,26 +208,32 @@ function buildScenario(kind: Scenario): Board {
     config.gateway.burst = 5;
     config.gateway.rate = 2;
   }
-  if (["cache", "redis", "database"].includes(kind))
+  if (["cache", "redis", "database", "resilience"].includes(kind))
     return {
       version: 1,
       title:
         kind === "redis"
           ? "Redis · cache-aside & memory"
-          : kind === "database"
-            ? "Database · primary & replica"
-            : "User profile API",
+          : kind === "resilience"
+            ? "Dependency resilience"
+            : kind === "database"
+              ? "Database · primary & replica"
+              : "User profile API",
       config,
       nodes: catalog
         .filter(
           (item) =>
             ["client", "backend", "cache", "database"].includes(item.role) &&
-            !(kind === "database" && item.role === "cache"),
+            !(
+              ["database", "resilience"].includes(kind) && item.role === "cache"
+            ),
         )
         .map((item) => createNode(item.role)),
       edges: [
         createEdge("client", "backend"),
-        ...(kind === "database" ? [] : [createEdge("backend", "cache")]),
+        ...(["database", "resilience"].includes(kind)
+          ? []
+          : [createEdge("backend", "cache")]),
         createEdge("backend", "database"),
       ],
     };
@@ -260,10 +277,23 @@ export function scenario(kind: Scenario): Board {
   board.config.links = board.edges.map((e) => e.id);
   return board;
 }
+export function executionConfig(board: Board): Config {
+  return {
+    ...board.config,
+    roles: board.nodes.map((n) => n.data.role as Role),
+    components: board.nodes.map((n) => ({
+      id: n.id,
+      role: n.data.role as Role,
+      name: String(n.data.name),
+    })),
+    links: board.edges.map((e) => `${e.source}-${e.target}`),
+  };
+}
 export function serializeBoard(board: Board): string {
   return JSON.stringify(
     {
       ...board,
+      config: executionConfig(board),
       nodes: board.nodes.map((n) => ({
         id: n.id,
         type: "component",
@@ -478,6 +508,7 @@ export function parseBoard(text: string): Board {
     nodes,
     edges,
     config,
+    interview: parseBrief(value.interview),
   };
 }
 export function canConnect(source: Node, target: Node): boolean {
