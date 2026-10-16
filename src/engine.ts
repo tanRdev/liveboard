@@ -1,4 +1,29 @@
-export type Role = "client" | "backend" | "cache" | "database";
+export type Role = "client" | "backend" | "cache" | "database" | "balancer";
+export type BackendSettings = {
+  concurrency: number;
+  queueLimit: number;
+  timeout: number;
+  route: string;
+  online: boolean;
+  processingDelay: number;
+};
+export type Component = { id: string; role: Role; name: string };
+export type BackendState = BackendSettings & {
+  name: string;
+  active: number;
+  reachable: boolean;
+  queued: number;
+  assigned: number;
+  completed: number;
+  failed: number;
+  rejected: number;
+};
+export type Transit = {
+  edge: string;
+  reverse: boolean;
+  until: number;
+  request: number;
+};
 export type Config = {
   ttl: number;
   capacity: number;
@@ -12,8 +37,12 @@ export type Config = {
   records: Record<string, { id: string; name: string; email: string }>;
   roles: Role[];
   links: string[];
+  components?: Component[];
+  backendOverrides?: Record<string, Partial<BackendSettings>>;
+  balancer: { policy: "round-robin" | "least-connections"; online: boolean };
 };
 export const defaults: Config = {
+  balancer: { policy: "round-robin", online: true },
   ttl: 30,
   capacity: 5,
   eviction: "LRU",
@@ -30,11 +59,54 @@ export const defaults: Config = {
   roles: ["client", "backend", "cache", "database"],
   links: ["client-backend", "backend-cache", "backend-database"],
 };
+export function backendSettings(config: Config, id: string): BackendSettings {
+  return {
+    concurrency: config.concurrency,
+    queueLimit: config.queueLimit,
+    timeout: config.timeout,
+    route: config.route,
+    online: true,
+    processingDelay: 0,
+    ...config.backendOverrides?.[id],
+  };
+}
+export function components(config: Config): Component[] {
+  return (
+    config.components ??
+    config.roles.map((role) => ({ id: role, role, name: role }))
+  );
+}
+export function initialSnapshot(): Snapshot {
+  return {
+    now: 0,
+    events: [],
+    results: [],
+    entries: [],
+    reads: 0,
+    hits: 0,
+    misses: 0,
+    queue: 0,
+    active: false,
+    activeCount: 0,
+    peakQueue: 0,
+    metrics: {
+      sent: 0,
+      completed: 0,
+      failed: 0,
+      rejected: 0,
+      totalDuration: 0,
+      totalWait: 0,
+    },
+    traffic: { running: false, rate: 5, path: "/users/1" },
+    backends: {},
+    transit: [],
+  };
+}
 export type Trace = {
   id: number;
   request: number;
   time: number;
-  component: Role;
+  component: string;
   text: string;
   kind: "info" | "hit" | "miss" | "error";
   edge?: string;
@@ -48,6 +120,9 @@ export type Result = {
   duration: number;
   wait: number;
   source: string;
+  backendId?: string;
+  backendName?: string;
+  trace: Trace[];
 };
 type Job = {
   id: number;
@@ -59,6 +134,11 @@ type Job = {
   due: number;
   startedAt: number;
   body?: unknown;
+  backendId?: string;
+  backendName?: string;
+  viaBalancer?: boolean;
+  responseSource?: string;
+  trace: Trace[];
 };
 export type Snapshot = {
   now: number;
@@ -89,31 +169,12 @@ export type Snapshot = {
   traffic: { running: boolean; rate: number; path: string };
   edge?: string;
   reverse?: boolean;
+  backends: Record<string, BackendState>;
+  transit: Transit[];
 };
 export class Engine {
   config: Config = structuredClone(defaults);
-  state: Snapshot = {
-    now: 0,
-    events: [],
-    results: [],
-    entries: [],
-    reads: 0,
-    hits: 0,
-    misses: 0,
-    queue: 0,
-    active: false,
-    activeCount: 0,
-    peakQueue: 0,
-    metrics: {
-      sent: 0,
-      completed: 0,
-      failed: 0,
-      rejected: 0,
-      totalDuration: 0,
-      totalWait: 0,
-    },
-    traffic: { running: false, rate: 5, path: "/users/1" },
-  };
+  state: Snapshot = initialSnapshot();
   jobs: Job[] = [];
   current?: Job;
   running: Job[] = [];
@@ -121,21 +182,142 @@ export class Engine {
   nextId = 1;
   eventId = 1;
   edgeUntil = 0;
+  roundRobin = 0;
+  constructor() {
+    this.refreshBackends();
+  }
   configure(config: Config) {
     this.config = { ...structuredClone(defaults), ...structuredClone(config) };
     this.config.concurrency = this.limit(this.config.concurrency, 1, 16);
     this.config.queueLimit = this.limit(this.config.queueLimit, 0, 500);
+    for (const [id, settings] of Object.entries(
+      this.config.backendOverrides ?? {},
+    )) {
+      this.config.backendOverrides![id] = {
+        ...settings,
+        concurrency: this.limit(
+          settings.concurrency ?? this.config.concurrency,
+          1,
+          16,
+        ),
+        queueLimit: this.limit(
+          settings.queueLimit ?? this.config.queueLimit,
+          0,
+          500,
+        ),
+        timeout: this.limit(settings.timeout ?? this.config.timeout, 1, 60000),
+        processingDelay: this.limit(settings.processingDelay ?? 0, 0, 60000),
+      };
+    }
+    this.refreshBackends();
+    const removed = this.running.filter(
+      (job) => !this.state.backends[job.backendId!],
+    );
+    this.running = this.running.filter(
+      (job) => this.state.backends[job.backendId!],
+    );
+    for (const job of removed)
+      this.record(job, 503, { error: "Assigned backend removed" }, "backend");
+    const cancelled = this.jobs.filter(
+      (job) => !this.state.backends[job.backendId!]?.online,
+    );
+    this.jobs = this.jobs.filter(
+      (job) => this.state.backends[job.backendId!]?.online,
+    );
+    for (const job of cancelled) {
+      job.startedAt = this.state.now;
+      this.record(
+        job,
+        503,
+        { error: "Assigned backend unavailable" },
+        "backend",
+      );
+    }
     this.startNext();
+  }
+  refreshBackends() {
+    const previous = this.state.backends;
+    this.state.backends = Object.fromEntries(
+      components(this.config)
+        .filter((node) => node.role === "backend")
+        .map((node) => {
+          const stats = previous[node.id];
+          return [
+            node.id,
+            {
+              ...backendSettings(this.config, node.id),
+              name: node.name,
+              reachable:
+                this.hasRole("balancer") && this.connected("client", "balancer")
+                  ? this.config.balancer.online &&
+                    this.connected("balancer", node.id)
+                  : this.connected("client", node.id),
+              active: this.running.filter((job) => job.backendId === node.id)
+                .length,
+              queued: this.jobs.filter((job) => job.backendId === node.id)
+                .length,
+              assigned: stats?.assigned ?? 0,
+              completed: stats?.completed ?? 0,
+              failed: stats?.failed ?? 0,
+              rejected: stats?.rejected ?? 0,
+            },
+          ];
+        }),
+    );
+  }
+  hasRole(role: Role) {
+    return components(this.config).some((node) => node.role === role);
+  }
+  connected(source: string, target: string) {
+    return this.config.links.includes(`${source}-${target}`);
+  }
+  chooseBackend() {
+    const ids = Object.keys(this.state.backends);
+    if (!this.hasRole("client"))
+      return { error: "Add a client to send requests" };
+    const viaBalancer =
+      this.hasRole("balancer") && this.connected("client", "balancer");
+    if (viaBalancer && !this.config.balancer.online)
+      return { error: "Load balancer unavailable" };
+    const targets = ids.filter((id) =>
+      this.connected(viaBalancer ? "balancer" : "client", id),
+    );
+    const healthy = targets.filter((id) => this.state.backends[id].online);
+    if (!healthy.length)
+      return {
+        error: targets.length
+          ? "No healthy backend targets"
+          : "Connect the client or load balancer to a backend",
+      };
+    if (!viaBalancer) return { id: healthy[0], viaBalancer };
+    let candidates = healthy;
+    if (this.config.balancer.policy === "least-connections") {
+      const least = Math.min(
+        ...healthy.map(
+          (id) =>
+            this.state.backends[id].active + this.state.backends[id].queued,
+        ),
+      );
+      candidates = healthy.filter(
+        (id) =>
+          this.state.backends[id].active + this.state.backends[id].queued ===
+          least,
+      );
+    }
+    return {
+      id: candidates[this.roundRobin++ % candidates.length],
+      viaBalancer,
+    };
   }
   emit(
     job: Job,
-    component: Role,
+    component: string,
     text: string,
     kind: Trace["kind"] = "info",
     edge?: string,
     reverse = false,
   ) {
-    this.state.events.push({
+    const event: Trace = {
       id: this.eventId++,
       request: job.id,
       time: this.state.now,
@@ -144,13 +326,23 @@ export class Engine {
       kind,
       edge,
       reverse,
-    });
+    };
+    this.state.events.push(event);
+    job.trace.push(event);
     this.state.events = this.state.events.slice(-500);
     this.edgeUntil = this.state.now + 220;
     this.state.edge = edge;
     this.state.reverse = reverse;
+    if (edge)
+      this.state.transit = [
+        ...this.state.transit,
+        { edge, reverse, request: job.id, until: this.state.now + 220 },
+      ].slice(-80);
   }
   expire() {
+    this.state.transit = this.state.transit.filter(
+      (message) => message.until > this.state.now,
+    );
     this.state.entries = this.state.entries.filter(
       (e) => e.expires > this.state.now,
     );
@@ -176,14 +368,39 @@ export class Engine {
         deadline: 0,
         due: 0,
         startedAt: this.state.now,
+        trace: [],
       };
       this.state.metrics.sent++;
+      const target = this.chooseBackend();
+      if (!target.id) {
+        this.record(job, 503, { error: target.error }, "topology");
+        continue;
+      }
+      job.backendId = target.id;
+      job.backendName = this.state.backends[target.id].name;
+      job.viaBalancer = target.viaBalancer;
+      const backend = this.state.backends[target.id];
+      backend.assigned++;
+      if (job.viaBalancer)
+        this.emit(
+          job,
+          "balancer",
+          `${this.config.balancer.policy} selected ${job.backendName}`,
+          "info",
+          "client-balancer",
+        );
       if (
-        this.running.length >= this.config.concurrency &&
-        this.jobs.length >= this.config.queueLimit
+        backend.active >= backend.concurrency &&
+        backend.queued >= backend.queueLimit
       ) {
-        this.record(job, 429, { error: "Backend queue is full" }, "overload");
+        this.record(
+          job,
+          429,
+          { error: "Backend queue is full", backend: job.backendId },
+          "overload",
+        );
         this.state.metrics.rejected++;
+        backend.rejected++;
         continue;
       }
       this.jobs.push(job);
@@ -194,25 +411,40 @@ export class Engine {
     this.state.queue = this.jobs.length;
   }
   startNext() {
-    while (this.jobs.length && this.running.length < this.config.concurrency) {
-      const job = this.jobs.shift()!;
+    for (const job of [...this.jobs]) {
+      const backend = this.state.backends[job.backendId!];
+      if (!backend?.online || backend.active >= backend.concurrency) continue;
+      this.jobs = this.jobs.filter((queued) => queued.id !== job.id);
       job.startedAt = this.state.now;
-      job.deadline = this.state.now + this.config.timeout;
+      job.deadline = this.state.now + backend.timeout;
       job.due = this.state.now + 160;
       this.running.push(job);
+      backend.active++;
       this.emit(
         job,
         "client",
         `GET ${job.path} sent`,
         "info",
-        "client-backend",
+        job.viaBalancer
+          ? `balancer-${job.backendId}`
+          : `client-${job.backendId}`,
       );
     }
+    for (const [id, backend] of Object.entries(this.state.backends))
+      backend.queued = this.jobs.filter((job) => job.backendId === id).length;
     this.state.activeCount = this.running.length;
     this.state.active = this.running.length > 0;
     this.state.queue = this.jobs.length;
   }
   record(job: Job, status: number, body: unknown, source: string) {
+    if (
+      status >= 400 &&
+      body &&
+      typeof body === "object" &&
+      "error" in body &&
+      typeof body.error === "string"
+    )
+      this.emit(job, job.backendId ?? "client", body.error, "error");
     const duration = this.state.now - job.start;
     const wait = job.startedAt - job.start;
     this.state.results.unshift({
@@ -223,8 +455,15 @@ export class Engine {
       duration,
       wait,
       source,
+      backendId: job.backendId,
+      backendName: job.backendName,
+      trace: job.trace,
     });
     this.state.results = this.state.results.slice(0, 100);
+    if (job.backendId && this.state.backends[job.backendId]) {
+      this.state.backends[job.backendId].completed++;
+      this.state.backends[job.backendId].failed += Number(status >= 400);
+    }
     this.state.metrics.completed++;
     this.state.metrics.failed += Number(status >= 400);
     this.state.metrics.totalDuration += duration;
@@ -234,7 +473,9 @@ export class Engine {
       "client",
       `${status} ${status === 200 ? "OK" : "Error"} · response received`,
       status >= 400 ? "error" : "info",
-      "client-backend",
+      job.viaBalancer
+        ? "client-balancer"
+        : `client-${job.backendId ?? "backend"}`,
       true,
     );
   }
@@ -242,6 +483,8 @@ export class Engine {
     const job = this.current!;
     this.record(job, status, body, source);
     this.running = this.running.filter((active) => active.id !== job.id);
+    if (job.backendId && this.state.backends[job.backendId])
+      this.state.backends[job.backendId].active--;
     this.current = undefined;
     this.startNext();
   }
@@ -272,12 +515,35 @@ export class Engine {
       this.finish(504, { error: "Backend dependency timed out" }, "timeout");
       return;
     }
-    const connected = (link: string) => this.config.links.includes(link);
+    const backend = this.state.backends[j.backendId!];
+    const settings = backendSettings(this.config, j.backendId!);
+    const connected = (role: string) => this.connected(j.backendId!, role);
+    if (!backend?.online) {
+      this.finish(
+        503,
+        { error: "Assigned backend unavailable", backend: j.backendId },
+        "backend",
+      );
+      return;
+    }
+    if (
+      j.viaBalancer &&
+      (!this.hasRole("balancer") ||
+        !this.config.balancer.online ||
+        !this.connected("client", "balancer") ||
+        !this.connected("balancer", j.backendId!))
+    ) {
+      this.finish(
+        503,
+        { error: "Load balancer response path unavailable" },
+        "topology",
+      );
+      return;
+    }
     if (j.stage === 0) {
       if (
-        !this.config.roles.includes("client") ||
-        !this.config.roles.includes("backend") ||
-        !connected("client-backend")
+        !this.hasRole("client") ||
+        !this.connected(j.viaBalancer ? "balancer" : "client", j.backendId!)
       ) {
         this.finish(
           503,
@@ -286,7 +552,7 @@ export class Engine {
         );
         return;
       }
-      const prefix = this.config.route.split(":")[0];
+      const prefix = settings.route.split(":")[0];
       if (
         !j.path.startsWith(prefix) ||
         !j.path.slice(prefix.length) ||
@@ -295,26 +561,43 @@ export class Engine {
         this.finish(404, { error: "No matching route" }, "router");
         return;
       }
-      this.emit(j, "backend", `Route matched: GET ${this.config.route}`);
+      this.emit(j, j.backendId!, `Route matched: GET ${settings.route}`);
       j.stage = 1;
-      j.due = this.state.now + 120;
+      j.due = this.state.now + 120 + settings.processingDelay;
     } else if (j.stage === 1) {
-      if (!this.config.roles.includes("cache") || !connected("backend-cache")) {
-        this.emit(j, "backend", "Cache is disconnected. Read database.");
+      if (!this.hasRole("cache") || !connected("cache")) {
+        this.emit(j, j.backendId!, "Cache is disconnected. Read database.");
         j.stage = 3;
         j.due = this.state.now + this.config.delay;
         return;
       }
-      this.emit(j, "cache", `Lookup ${j.key}`, "info", "backend-cache");
+      this.emit(j, "cache", `Lookup ${j.key}`, "info", `${j.backendId}-cache`);
       j.stage = 2;
       j.due = this.state.now + 100;
     } else if (j.stage === 2) {
+      if (!this.hasRole("cache") || !connected("cache")) {
+        this.emit(
+          j,
+          j.backendId!,
+          "Cache disconnected during lookup. Read database.",
+        );
+        j.stage = 3;
+        j.due = this.state.now + this.config.delay;
+        return;
+      }
       const entry = this.state.entries.find((e) => e.key === j.key);
       if (entry) {
         j.body = structuredClone(entry.value);
         this.state.hits++;
         entry.used = this.state.now;
-        this.emit(j, "cache", `HIT · ${j.key}`, "hit", "backend-cache", true);
+        this.emit(
+          j,
+          "cache",
+          `HIT · ${j.key}`,
+          "hit",
+          `${j.backendId}-cache`,
+          true,
+        );
         j.stage = 5;
         j.due = this.state.now + 160;
       } else {
@@ -324,7 +607,7 @@ export class Engine {
           "cache",
           `MISS · ${j.key} is not stored`,
           "miss",
-          "backend-cache",
+          `${j.backendId}-cache`,
           true,
         );
         j.stage = 3;
@@ -332,8 +615,8 @@ export class Engine {
       }
     } else if (j.stage === 3) {
       if (
-        !this.config.roles.includes("database") ||
-        !connected("backend-database") ||
+        !this.hasRole("database") ||
+        !connected("database") ||
         !this.config.online
       ) {
         this.emit(
@@ -341,7 +624,7 @@ export class Engine {
           "database",
           "Database unavailable",
           "error",
-          "backend-database",
+          `${j.backendId}-database`,
         );
         this.finish(503, { error: "Database unavailable" }, "database");
         return;
@@ -352,11 +635,23 @@ export class Engine {
         "database",
         `Read users/${j.path.split("/").pop()}`,
         "info",
-        "backend-database",
+        `${j.backendId}-database`,
       );
       j.stage = 4;
       j.due = this.state.now + 100;
     } else if (j.stage === 4) {
+      if (
+        !this.hasRole("database") ||
+        !connected("database") ||
+        !this.config.online
+      ) {
+        this.finish(
+          503,
+          { error: "Database unavailable during read" },
+          "database",
+        );
+        return;
+      }
       const value = this.config.records[j.path.split("/").pop()!];
       if (!value) {
         this.finish(404, { error: "User not found" }, "database");
@@ -368,27 +663,29 @@ export class Engine {
         "database",
         "Record found · return user",
         "info",
-        "backend-database",
+        `${j.backendId}-database`,
         true,
       );
       j.stage = 7;
       j.due = this.state.now + 120;
     } else if (j.stage === 7) {
       const value = j.body;
-      if (this.config.roles.includes("cache") && connected("backend-cache")) {
+      if (this.hasRole("cache") && connected("cache")) {
         this.state.entries = this.state.entries.filter(
           (entry) => entry.key !== j.key,
         );
+        const evicted: string[] = [];
         while (this.state.entries.length >= this.config.capacity) {
           const order = this.config.eviction === "LRU" ? "used" : "created";
           this.state.entries.sort((a, b) => a[order] - b[order]);
-          const evicted = this.state.entries.shift()!;
+          evicted.push(this.state.entries.shift()!.key);
+        }
+        if (evicted.length)
           this.emit(
             j,
             "cache",
-            `Evicted ${evicted.key} · ${this.config.eviction}`,
+            `Evicted ${evicted.length === 1 ? evicted[0] : `${evicted.length} entries`} · ${this.config.eviction}`,
           );
-        }
         this.state.entries.push({
           key: j.key,
           value,
@@ -401,13 +698,27 @@ export class Engine {
           "cache",
           `Stored ${j.key} · expires in ${this.config.ttl}s`,
           "info",
-          "backend-cache",
+          `${j.backendId}-cache`,
         );
       }
       j.stage = 6;
       j.due = this.state.now + 160;
     } else {
-      this.finish(200, j.body, j.stage === 5 ? "cache" : "database");
+      if (j.viaBalancer && j.stage !== 8) {
+        this.emit(
+          j,
+          "balancer",
+          `Response from ${j.backendName}`,
+          "info",
+          `balancer-${j.backendId}`,
+          true,
+        );
+        j.responseSource = j.stage === 5 ? "cache" : "database";
+        j.stage = 8;
+        j.due = this.state.now + 80;
+      } else if (j.stage === 8) {
+        this.finish(200, j.body, j.responseSource!);
+      } else this.finish(200, j.body, j.stage === 5 ? "cache" : "database");
     }
   }
   advance(ms: number) {

@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { ArrowUpRight, Play, Square, Activity } from "lucide-react";
-import type { Config, Snapshot } from "./engine";
+import type { Snapshot } from "./engine";
 
 type Props = {
   state: Snapshot;
-  config: Config;
   path: string;
   paused: boolean;
   onTraffic: (rate: number, path: string, running: boolean) => void;
@@ -13,7 +12,6 @@ type Props = {
 
 export default function TrafficPanel({
   state,
-  config,
   path,
   paused,
   onTraffic,
@@ -27,10 +25,23 @@ export default function TrafficPanel({
   const failureRate = metrics.completed
     ? Math.round((metrics.failed / metrics.completed) * 100)
     : 0;
-  const queued = Math.min(
-    100,
-    (state.queue / Math.max(1, config.queueLimit)) * 100,
+  const targets = Object.entries(state.backends);
+  const reachable = targets.filter(
+    ([, backend]) => backend.online && backend.reachable,
   );
+  const concurrency = reachable.reduce(
+    (sum, [, backend]) => sum + backend.concurrency,
+    0,
+  );
+  const queueLimit = reachable.reduce(
+    (sum, [, backend]) => sum + backend.queueLimit,
+    0,
+  );
+  const samples = state.results
+    .map((result) => result.duration)
+    .sort((a, b) => a - b);
+  const p95 = samples[Math.max(0, Math.ceil(samples.length * 0.95) - 1)] ?? 0;
+  const queued = Math.min(100, (state.queue / Math.max(1, queueLimit)) * 100);
   return (
     <div className="traffic-panel">
       <div className="traffic-controls">
@@ -83,14 +94,14 @@ export default function TrafficPanel({
           <span>In flight</span>
           <strong>
             {state.activeCount}
-            <small> / {config.concurrency}</small>
+            <small> / {concurrency}</small>
           </strong>
         </div>
         <div>
           <span>Waiting</span>
           <strong>
             {state.queue}
-            <small> / {config.queueLimit}</small>
+            <small> / {queueLimit}</small>
           </strong>
           <div className="traffic-meter">
             <i style={{ width: `${queued}%` }} />
@@ -117,6 +128,60 @@ export default function TrafficPanel({
         <span>{metrics.rejected} rejected · 429</span>
         <span>Peak queue {state.peakQueue}</span>
         <span>Full queues reject new requests.</span>
+      </div>
+      <div className="distribution-heading">
+        <span>BACKEND DISTRIBUTION</span>
+        <span>
+          P95 {p95} ms · last {samples.length} responses · simulated
+        </span>
+      </div>
+      <div className="distribution-table">
+        <div className="distribution-columns">
+          <span>INSTANCE</span>
+          <span>ROUTED</span>
+          <span>ACTIVE</span>
+          <span>WAITING</span>
+          <span>FAILED</span>
+        </div>
+        {targets.map(([id, backend]) => (
+          <div className="distribution-row" key={id}>
+            <span>
+              <i
+                className={`status-dot ${backend.online && backend.reachable ? "" : "offline"}`}
+              />
+              <strong>{backend.name}</strong>
+              <small>
+                {backend.online
+                  ? backend.reachable
+                    ? ""
+                    : "not routed"
+                  : "offline"}
+              </small>
+            </span>
+            <span>
+              <span className="distribution-track">
+                <i
+                  style={{
+                    width: `${state.metrics.sent ? (backend.assigned / state.metrics.sent) * 100 : 0}%`,
+                  }}
+                />
+              </span>
+              {backend.assigned}
+            </span>
+            <span>
+              {backend.active} / {backend.concurrency}
+            </span>
+            <span>{backend.queued}</span>
+            <span className={backend.failed ? "error-text" : ""}>
+              {backend.failed}
+            </span>
+          </div>
+        ))}
+        {!targets.length && (
+          <p className="field-help">
+            Add a backend instance to observe routing.
+          </p>
+        )}
       </div>
     </div>
   );

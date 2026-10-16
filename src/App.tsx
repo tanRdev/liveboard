@@ -4,24 +4,14 @@ import {
   Background,
   Controls,
   MiniMap,
-  BaseEdge,
-  EdgeLabelRenderer,
-  getSmoothStepPath,
-  type EdgeProps,
-  Handle,
-  Position,
-  MarkerType,
   addEdge,
   useNodesState,
-  useUpdateNodeInternals,
   useEdgesState,
   type Node,
   type Edge,
-  type NodeProps,
   type ReactFlowInstance,
 } from "@xyflow/react";
 import {
-  Activity,
   ArrowRight,
   ArrowUpRight,
   Box,
@@ -31,12 +21,9 @@ import {
   ChevronRight,
   CircleHelp,
   Clock3,
-  Code2,
-  Database,
   Download,
   Expand,
   FilePlus2,
-  Globe,
   Layers,
   MousePointer2,
   Network,
@@ -46,326 +33,60 @@ import {
   RotateCcw,
   Search,
   Send,
-  Settings2,
   SkipForward,
-  SlidersHorizontal,
-  Trash2,
+  Upload,
   X,
   Zap,
 } from "lucide-react";
-import { defaults, type Config, type Role, type Snapshot } from "./engine";
+import {
+  defaults,
+  initialSnapshot,
+  type Config,
+  type Role,
+  type Snapshot,
+} from "./engine";
 import "@xyflow/react/dist/style.css";
 import "./styles.css";
 import TrafficPanel from "./TrafficPanel";
-const icons = { client: Globe, backend: Code2, cache: Zap, database: Database };
-const catalog: {
-  role: Role;
-  name: string;
-  description: string;
-  category: string;
-  tech: string;
-}[] = [
-  {
-    role: "client",
-    name: "Client",
-    description: "Where every request begins",
-    category: "APPLICATION",
-    tech: "HTTP client",
-  },
-  {
-    role: "backend",
-    name: "Backend service",
-    description: "Routes, logic & dependencies",
-    category: "APPLICATION",
-    tech: "Node.js",
-  },
-  {
-    role: "cache",
-    name: "Cache",
-    description: "Fast access. Fewer reads.",
-    category: "DATA & STORAGE",
-    tech: "Key-value cache",
-  },
-  {
-    role: "database",
-    name: "Database",
-    description: "A source of truth for your data",
-    category: "DATA & STORAGE",
-    tech: "Relational database",
-  },
-];
-const positions = {
-  client: { x: 40, y: 215 },
-  backend: { x: 355, y: 215 },
-  cache: { x: 705, y: 65 },
-  database: { x: 705, y: 350 },
-};
-const seedNodes: Node[] = catalog.map((c) => ({
-  id: c.role,
-  type: "component",
-  position: positions[c.role],
-  data: { ...c },
-}));
-const seedEdges: Edge[] = defaults.links.map((id) => {
-  const [source, target] = id.split("-");
-  return {
-    id,
-    source,
-    target,
-    type: "traffic",
-    label:
-      target === "backend"
-        ? "HTTP"
-        : target === "cache"
-          ? "GET / SET"
-          : "QUERY",
-    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
-  };
-});
-const empty: Snapshot = {
-  now: 0,
-  events: [],
-  results: [],
-  entries: [],
-  reads: 0,
-  hits: 0,
-  misses: 0,
-  queue: 0,
-  active: false,
-  activeCount: 0,
-  peakQueue: 0,
-  metrics: {
-    sent: 0,
-    completed: 0,
-    failed: 0,
-    rejected: 0,
-    totalDuration: 0,
-    totalWait: 0,
-  },
-  traffic: { running: false, rate: 5, path: "/users/1" },
-};
-type Board = {
-  version: 1;
-  nodes: Node[];
-  edges: Edge[];
-  config: Config;
-  title: string;
-};
-function restore(): Board | undefined {
-  try {
-    const b = JSON.parse(localStorage.getItem("liveboard-v1") || "null");
-    if (
-      b?.version === 1 &&
-      Array.isArray(b.nodes) &&
-      b.nodes.every(
-        (n: Node) =>
-          catalog.some((c) => c.role === n.id) &&
-          Number.isFinite(n.position?.x) &&
-          Number.isFinite(n.position?.y),
-      ) &&
-      Array.isArray(b.edges) &&
-      b.config?.records &&
-      b.config.ttl > 0 &&
-      b.config.capacity > 0
-    )
-      return b;
-  } catch {
-    /* A damaged local document starts with the example board. */
-  }
-}
-function ComponentNode({ id, data, selected }: NodeProps) {
-  const updateNodeInternals = useUpdateNodeInternals();
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => updateNodeInternals(id));
-    return () => cancelAnimationFrame(frame);
-  }, [id, updateNodeInternals]);
-  const role = data.role as Role;
-  const Icon = icons[role];
-  const state = data.state as Snapshot;
-  const config = data.config as Config;
-  return (
-    <div
-      className={`component-node ${role} ${selected ? "selected" : ""} ${data.active ? "node-active" : ""}`}
-    >
-      {role !== "client" && <Handle type="target" position={Position.Left} />}
-      <div className="node-heading">
-        <span className={`node-icon ${role}`}>
-          <Icon size={21} strokeWidth={1.7} />
-        </span>
-        <div>
-          <strong>{String(data.name)}</strong>
-          <span>{String(data.tech)}</span>
-        </div>
-        <span
-          className={`status-dot ${role === "database" && !config.online ? "offline" : ""}`}
-        />
-      </div>
-      <div className="node-content">
-        {role === "client" && (
-          <>
-            <div className="node-code">
-              <b>GET</b> /users/1
-            </div>
-            <div className="node-detail">
-              <span>Requests sent</span>
-              <strong>{state.metrics.sent}</strong>
-            </div>
-          </>
-        )}
-        {role === "backend" && (
-          <>
-            <div className="node-code">
-              <b>GET</b> {config.route}
-            </div>
-            <div className="node-detail">
-              <span>
-                <span className="tiny-dot" /> Cache-aside
-              </span>
-              <span>
-                {state.queue
-                  ? `${state.queue} waiting`
-                  : `${state.activeCount} / ${config.concurrency} active`}
-              </span>
-            </div>
-            <div
-              className="active-slots"
-              aria-label={`${state.activeCount} active requests, ${state.queue} waiting`}
-            >
-              {Array.from({ length: config.concurrency }, (_, i) => (
-                <i
-                  className={i < state.activeCount ? "occupied" : ""}
-                  key={i}
-                />
-              ))}
-              <span>
-                {state.metrics.rejected
-                  ? `${state.metrics.rejected} rejected`
-                  : `${config.concurrency} execution ${config.concurrency === 1 ? "slot" : "slots"}`}
-              </span>
-            </div>
-            {state.queue > 0 && (
-              <div className="queue-bar">
-                {Array.from({ length: Math.min(state.queue, 16) }, (_, i) => (
-                  <i key={i} />
-                ))}
-              </div>
-            )}
-          </>
-        )}
-        {role === "cache" && (
-          <>
-            <div className="node-detail">
-              <span>Entries</span>
-              <strong>
-                {state.entries.length} <em>/ {config.capacity}</em>
-              </strong>
-            </div>
-            {state.entries.length ? (
-              state.entries.slice(0, 2).map((e) => (
-                <div className="cache-entry" key={e.key}>
-                  <code>{e.key}</code>
-                  <span>
-                    <Clock3 size={10} />{" "}
-                    {Math.max(0, Math.ceil((e.expires - state.now) / 1000))}s
-                  </span>
-                </div>
-              ))
-            ) : (
-              <div className="empty-cache">No entries yet</div>
-            )}
-            <div className="node-footer">
-              <span>
-                <i className="tiny-dot" /> {state.hits} hits
-              </span>
-              <span>{state.misses} misses</span>
-              <span>{config.eviction}</span>
-            </div>
-          </>
-        )}
-        {role === "database" && (
-          <>
-            <div className="db-table">
-              <span>▤ &nbsp; users</span>
-              <span>{Object.keys(config.records).length} records</span>
-            </div>
-            <div className="node-detail">
-              <span>Total reads</span>
-              <strong>{state.reads}</strong>
-            </div>
-            <div className="node-footer">
-              <span className={!config.online ? "error-text" : ""}>
-                {config.online ? "● Available" : "● Offline"}
-              </span>
-              <span>{config.delay} ms / read</span>
-            </div>
-          </>
-        )}
-      </div>
-      {["client", "backend"].includes(role) && (
-        <Handle type="source" position={Position.Right} />
-      )}
-    </div>
-  );
-}
-function TrafficEdge(props: EdgeProps) {
-  const [path, x, y] = getSmoothStepPath(props);
-  const active = !!props.data?.active;
-  const reverse = !!props.data?.reverse;
-  return (
-    <>
-      <BaseEdge
-        id={props.id}
-        path={path}
-        style={props.style}
-        markerEnd={reverse ? undefined : props.markerEnd}
-        markerStart={reverse ? props.markerEnd : undefined}
-      />
-      {props.label && (
-        <EdgeLabelRenderer>
-          <div
-            className="edge-label"
-            style={{
-              transform: `translate(-50%, -50%) translate(${x}px,${y}px)`,
-            }}
-          >
-            {props.label}
-          </div>
-        </EdgeLabelRenderer>
-      )}
-      {active && (
-        <circle
-          className="traffic-packet"
-          r="4"
-          fill={reverse ? "#8a9fba" : "#56885d"}
-          stroke="white"
-          strokeWidth="1.5"
-          style={{
-            offsetPath: `path("${path}")`,
-            animationDirection: reverse ? "reverse" : "normal",
-            animationPlayState: props.data?.playing ? "running" : "paused",
-          }}
-        />
-      )}
-    </>
-  );
-}
+import { AutoFit, ComponentNode, TrafficEdge } from "./BoardNodes";
+import {
+  catalog,
+  createNode,
+  createEdge,
+  scenario,
+  canConnect,
+  serializeBoard,
+  parseBoard,
+  type Board,
+} from "./board";
+import { icons } from "./visuals";
+import Inspector from "./Inspector";
 const edgeTypes = { traffic: TrafficEdge };
 const nodeTypes = { component: ComponentNode };
 function App() {
-  const [saved] = useState(restore);
+  const [saved] = useState(() => {
+    try {
+      const text = localStorage.getItem("liveboard-v1");
+      return text ? parseBoard(text) : undefined;
+    } catch {
+      // A damaged local document starts with the example board.
+      return undefined;
+    }
+  });
+  const [example] = useState(() => scenario("cache"));
   const [nodes, setNodes, onNodesChange] = useNodesState(
-    saved?.nodes || seedNodes,
+    saved?.nodes || example.nodes,
   );
   const [edges, setEdges, onEdgesChange] = useEdgesState(
-    saved?.edges || seedEdges,
+    saved?.edges || example.edges,
   );
   const [config, setConfig] = useState<Config>({
     ...defaults,
     ...saved?.config,
   });
   const [title, setTitle] = useState(saved?.title || "User profile API");
-  const [state, setState] = useState<Snapshot>(empty);
-  const [selection, setSelection] = useState<Role>("cache");
+  const [state, setState] = useState<Snapshot>(initialSnapshot);
+  const [selection, setSelection] = useState("cache");
   const [search, setSearch] = useState("");
   const [path, setPath] = useState("/users/1");
   const [playing, setPlaying] = useState(true);
@@ -392,7 +113,12 @@ function App() {
     message("configure", {
       config: {
         ...config,
-        roles: nodes.map((n) => n.id),
+        roles: nodes.map((n) => n.data.role),
+        components: nodes.map((n) => ({
+          id: n.id,
+          role: n.data.role,
+          name: String(n.data.name),
+        })),
         links: edges.map((e) => `${e.source}-${e.target}`),
       },
     });
@@ -424,87 +150,137 @@ function App() {
     const timer = setTimeout(() => setToast(""), 3000);
     return () => clearTimeout(timer);
   }, [toast]);
-  const update = (patch: Partial<Config>) =>
-    setConfig((c) => ({ ...c, ...patch }));
-  const selectedCatalog = catalog.find((c) => c.role === selection)!;
-  const SelectedIcon = icons[selection];
+  const selectedNode = nodes.find((n) => n.id === selection);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [focused, setFocused] = useState(false);
+  const boardDocument = (): Board => ({
+    version: 1,
+    nodes,
+    edges,
+    config,
+    title,
+  });
   const result =
     state.results.find((r) => r.id === requestId) || state.results[0];
-  const events = state.events.filter(
-    (e) =>
-      e.request === (requestId || result?.id || state.events.at(-1)?.request),
+  const traceRequest =
+    requestId ?? (state.active ? state.events.at(-1)?.request : result?.id);
+  const traceResult = state.results.find(
+    (request) => request.id === traceRequest,
   );
+  const events =
+    traceResult?.trace ??
+    state.events.filter((event) => event.request === traceRequest);
+  const tracePath =
+    traceResult?.path ??
+    events.find((event) => event.text.startsWith("GET "))?.text.split(" ")[1] ??
+    path;
   const save = () => {
-    const board: Board = {
-      version: 1,
-      nodes: nodes.map((n) => ({
-        ...n,
-        data: { ...n.data },
-      })),
-      edges,
-      config,
-      title,
-    };
     try {
-      localStorage.setItem("liveboard-v1", JSON.stringify(board));
+      const text = serializeBoard(boardDocument());
+      parseBoard(text);
+      localStorage.setItem("liveboard-v1", text);
       setToast("Board saved on this device");
-    } catch {
-      setToast("Storage is full. Export your board instead.");
+    } catch (error) {
+      setToast(
+        error instanceof Error && error.name !== "QuotaExceededError"
+          ? error.message
+          : "Storage is full. Export your board instead.",
+      );
     }
   };
   const add = (role: Role) => {
-    if (nodes.some((n) => n.id === role)) {
-      setSelection(role);
+    let id: string = role;
+    if (role === "backend") {
+      const available = ["backend", "backend-2", "backend-3", "backend-4"].find(
+        (id) => !nodes.some((n) => n.id === id),
+      );
+      if (!available) {
+        setToast("This board already has four backend instances.");
+        return;
+      }
+      id = available;
+    } else if (nodes.some((n) => n.id === id)) {
+      setSelection(id);
+      return;
+    }
+    const node = createNode(role, id);
+    if (role === "backend" && id !== "backend") {
+      const existing = nodes.filter((node) => node.data.role === "backend");
+      node.position = {
+        x: existing[0]?.position.x ?? node.position.x,
+        y: Math.max(...existing.map((node) => node.position.y)) + 210,
+      };
+    }
+    setNodes((ns) => [...ns, node]);
+    setSelection(id);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        void flow.current?.fitView({ padding: 0.15 });
+      }),
+    );
+  };
+  const loadBoard = (board: Board) => {
+    setNodes(
+      board.nodes.map((node) => ({
+        ...node,
+        measured: flow.current?.getInternalNode(node.id)?.measured,
+      })),
+    );
+    setEdges(board.edges);
+    setConfig(board.config);
+    setTitle(board.title);
+    setSelection(
+      board.nodes.find((n) => n.data.role === "balancer")?.id ??
+        board.nodes[0]?.id ??
+        "cache",
+    );
+    setRequestId(null);
+    message("reset");
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        void flow.current?.fitView({ padding: 0.15 });
+      }),
+    );
+  };
+  const resetBoard = (kind: "cache" | "balanced" | "empty") => {
+    loadBoard(scenario(kind));
+    setToast(
+      kind === "empty"
+        ? "Empty board ready. Add components from the library."
+        : "Scenario loaded. Send a request to begin.",
+    );
+  };
+  const importBoard = async (file?: File) => {
+    if (!file) return;
+    if (file.size > 1_000_000) {
+      setToast("Board files must be smaller than 1 MB.");
+      return;
+    }
+    try {
+      const board = parseBoard(await file.text());
+      loadBoard(board);
+      setToast("Board imported. Save to keep it on this device.");
+    } catch (error) {
       setToast(
-        `${(catalog.find((c) => c.role === role) || catalog[0]).name} selected on board`,
+        error instanceof Error
+          ? error.message
+          : "The board could not be imported.",
+      );
+    }
+  };
+  const exportBoard = () => {
+    try {
+      parseBoard(serializeBoard(boardDocument()));
+    } catch (error) {
+      setToast(
+        error instanceof Error
+          ? error.message
+          : "Check the board settings before exporting.",
       );
       return;
     }
-    const node = seedNodes.find((n) => n.id === role);
-    if (!node) return;
-    setNodes((ns) => [...ns, node]);
-    setSelection(role);
-  };
-  const resetBoard = (example: boolean) => {
-    setNodes(
-      example
-        ? seedNodes.map((node) => ({
-            ...node,
-            measured: flow.current?.getInternalNode(node.id)?.measured,
-          }))
-        : [],
-    );
-    setEdges(example ? seedEdges : []);
-    setConfig(structuredClone(defaults));
-    setRequestId(null);
-    message("reset");
-    setToast(
-      example
-        ? "Cache-aside example loaded"
-        : "Empty board ready. Add components from the library.",
-    );
-  };
-  const exportBoard = () => {
     const url = URL.createObjectURL(
-      new Blob(
-        [
-          JSON.stringify(
-            {
-              version: 1,
-              nodes: nodes.map((n) => ({
-                ...n,
-                data: { ...n.data },
-              })),
-              edges,
-              config,
-              title,
-            },
-            null,
-            2,
-          ),
-        ],
-        { type: "application/json" },
-      ),
+      new Blob([serializeBoard(boardDocument())], { type: "application/json" }),
     );
     const a = document.createElement("a");
     a.href = url;
@@ -520,21 +296,33 @@ function App() {
       state,
       config,
       active: state.active && state.events.at(-1)?.component === n.id,
+      requestPath: path,
+      targets: edges
+        .filter((edge) => edge.source === "balancer")
+        .map((edge) => edge.target),
     },
   }));
-  const renderedEdges: Edge[] = edges.map((e) => ({
-    ...e,
-    type: "traffic",
-    data: { active: state.edge === e.id, reverse: state.reverse, playing },
-    animated: state.edge === e.id,
-    className: `${state.edge === e.id ? "edge-active" : ""} ${state.reverse ? "reverse" : ""}`,
-    style: {
-      stroke: state.edge === e.id ? "#2d8b67" : "#b6c1bc",
-      strokeWidth: state.edge === e.id ? 2.5 : 1.5,
-    },
-  }));
+  const renderedEdges: Edge[] = edges.map((edge) => {
+    const traffic = state.transit.filter((message) => message.edge === edge.id);
+    const forward = traffic.filter((message) => !message.reverse).length;
+    const backward = traffic.length - forward;
+    const active = traffic.length > 0;
+    return {
+      ...edge,
+      type: "traffic",
+      data: { forward, backward, playing },
+      animated: active,
+      className: active ? "edge-active" : "",
+      style: {
+        stroke: active ? "#2d8b67" : "#b6c1bc",
+        strokeWidth: active ? 2.5 : 1.5,
+      },
+    };
+  });
   return (
-    <div className={`app-shell ${playing ? "" : "simulation-paused"}`}>
+    <div
+      className={`app-shell ${playing ? "" : "simulation-paused"} ${focused ? "focus-mode" : ""}`}
+    >
       <header className="topbar">
         <a className="brand" href="/">
           <span className="brand-icon">
@@ -567,14 +355,32 @@ function App() {
           </span>
           <input
             aria-label="Board name"
+            maxLength={80}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
           <span className="project-badge">Sandbox</span>
         </div>
         <div className="project-actions">
-          <button className="plain-button" onClick={() => resetBoard(false)}>
+          <button className="plain-button" onClick={() => resetBoard("empty")}>
             <FilePlus2 size={15} /> New board
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="application/json,.json"
+            hidden
+            aria-label="Import board file"
+            onChange={(event) => {
+              void importBoard(event.target.files?.[0]);
+              event.target.value = "";
+            }}
+          />
+          <button
+            className="plain-button"
+            onClick={() => fileInput.current?.click()}
+          >
+            <Upload size={15} /> Import
           </button>
           <button className="plain-button" onClick={exportBoard}>
             <Download size={15} /> Export
@@ -588,7 +394,7 @@ function App() {
         <aside className="library">
           <div className="panel-heading">
             <h2>Components</h2>
-            <span className="count">4</span>
+            <span className="count">{catalog.length}</span>
           </div>
           <p className="muted library-intro">
             The building blocks of your system.
@@ -603,51 +409,56 @@ function App() {
             />
             <kbd>/</kbd>
           </div>
-          {["APPLICATION", "DATA & STORAGE"].map((category) => (
-            <section className="catalog-section" key={category}>
-              <h3>{category}</h3>
-              {catalog
-                .filter(
-                  (c) =>
-                    c.category === category &&
-                    `${c.name} ${c.description}`
-                      .toLowerCase()
-                      .includes(search.toLowerCase()),
-                )
-                .map((c) => {
-                  const Icon = icons[c.role];
-                  return (
-                    <button
-                      className="catalog-item"
-                      key={c.role}
-                      onClick={() => add(c.role)}
-                      draggable
-                      onDragStart={(e) =>
-                        e.dataTransfer.setData("application/liveboard", c.role)
-                      }
-                    >
-                      <span className={`catalog-icon ${c.role}`}>
-                        <Icon size={19} strokeWidth={1.6} />
-                      </span>
-                      <span>
-                        <strong>{c.name}</strong>
-                        <small>{c.description}</small>
-                      </span>
-                      <Plus size={14} className="catalog-plus" />
-                    </button>
-                  );
-                })}
-            </section>
-          ))}
+          {["APPLICATION", "DATA & STORAGE", "TRAFFIC CONTROL"].map(
+            (category) => (
+              <section className="catalog-section" key={category}>
+                <h3>{category}</h3>
+                {catalog
+                  .filter(
+                    (c) =>
+                      c.category === category &&
+                      `${c.name} ${c.description}`
+                        .toLowerCase()
+                        .includes(search.toLowerCase()),
+                  )
+                  .map((c) => {
+                    const Icon = icons[c.role];
+                    return (
+                      <button
+                        className="catalog-item"
+                        key={c.role}
+                        onClick={() => add(c.role)}
+                        draggable
+                        onDragStart={(e) =>
+                          e.dataTransfer.setData(
+                            "application/liveboard",
+                            c.role,
+                          )
+                        }
+                      >
+                        <span className={`catalog-icon ${c.role}`}>
+                          <Icon size={19} strokeWidth={1.6} />
+                        </span>
+                        <span>
+                          <strong>{c.name}</strong>
+                          <small>{c.description}</small>
+                        </span>
+                        <Plus size={14} className="catalog-plus" />
+                      </button>
+                    );
+                  })}
+              </section>
+            ),
+          )}
           <div className="library-foot">
             <div className="coming">
               <Box size={16} />
               <span>More building blocks ahead</span>
             </div>
             <p>
-              Queues, load balancers, and more.
+              Build with up to four backend instances.
               <br />
-              First, make the fundamentals click.
+              Route traffic. Compare. Break things.
             </p>
           </div>
           <div className="scenario-card">
@@ -659,8 +470,11 @@ function App() {
               Explore hits, misses, and what happens when the database goes
               down.
             </p>
-            <button onClick={() => resetBoard(true)}>
+            <button onClick={() => resetBoard("cache")}>
               Load cache-aside example <ArrowUpRight size={15} />
+            </button>
+            <button onClick={() => resetBoard("balanced")}>
+              Load balanced system <ArrowUpRight size={15} />
             </button>
           </div>
         </aside>
@@ -674,6 +488,13 @@ function App() {
                 Build it. Run it. Understand it.
               </span>
             </div>
+            <button
+              className="plain-button focus-button"
+              onClick={() => setFocused(!focused)}
+            >
+              <Expand size={13} />
+              {focused ? "Show panels" : "Focus canvas"}
+            </button>
             <button
               className="icon-button"
               title="Fit board"
@@ -695,10 +516,17 @@ function App() {
           >
             <div className="canvas-info">
               <span className="scenario-label">
-                <span className="tiny-dot" /> CACHE-ASIDE PATTERN
+                <span className="tiny-dot" />
+                {nodes.some((n) => n.data.role === "balancer")
+                  ? "LOAD BALANCING"
+                  : "CACHE-ASIDE PATTERN"}
               </span>
               <h1>Good systems start with a question.</h1>
-              <p>What happens when the same request arrives twice?</p>
+              <p>
+                {nodes.some((n) => n.data.role === "balancer")
+                  ? "What happens when one backend goes offline?"
+                  : "What happens when the same request arrives twice?"}
+              </p>
             </div>
             <ReactFlow
               nodes={renderedNodes}
@@ -715,27 +543,17 @@ function App() {
                   }),
                 );
               }}
-              onNodeClick={(_, node) => setSelection(node.id as Role)}
-              onConnect={(c) => {
-                if (
-                  (c.source === "client" && c.target === "backend") ||
-                  (c.source === "backend" &&
-                    ["cache", "database"].includes(c.target))
-                )
-                  setEdges((es) =>
-                    addEdge(
-                      {
-                        ...c,
-                        id: `${c.source}-${c.target}`,
-                        type: "traffic",
-                        markerEnd: { type: MarkerType.ArrowClosed },
-                      },
-                      es,
-                    ),
+              onNodeClick={(_, node) => setSelection(node.id)}
+              onConnect={(connection) => {
+                const source = nodes.find((n) => n.id === connection.source);
+                const target = nodes.find((n) => n.id === connection.target);
+                if (source && target && canConnect(source, target))
+                  setEdges((edges) =>
+                    addEdge(createEdge(source.id, target.id), edges),
                   );
                 else
                   setToast(
-                    "Connect client to backend, then backend to cache or database.",
+                    "Connect a client to a backend or balancer. Backends connect to cache and database.",
                   );
               }}
               fitView
@@ -744,6 +562,7 @@ function App() {
               maxZoom={1.5}
               defaultEdgeOptions={{ type: "traffic" }}
             >
+              <AutoFit structureKey={nodes.map((node) => node.id).join(",")} />
               <Background color="#d8ded9" gap={20} size={1} />
               <Controls showInteractive={false} />
               <MiniMap
@@ -753,7 +572,8 @@ function App() {
                     backend: "#bdb5d6",
                     cache: "#98c9af",
                     database: "#dfc794",
-                  })[n.id] || "#ccc"
+                    balancer: "#a8c6d4",
+                  })[String(n.data.role)] || "#ccc"
                 }
                 maskColor="rgba(248,249,247,.7)"
               />
@@ -769,7 +589,7 @@ function App() {
                 </p>
                 <button
                   className="save-button"
-                  onClick={() => resetBoard(true)}
+                  onClick={() => resetBoard("cache")}
                 >
                   Or load the example <ArrowRight size={14} />
                 </button>
@@ -785,7 +605,9 @@ function App() {
               </div>
             </div>
           </div>
-          <section className="execution">
+          <section
+            className={`execution ${tab === "Traffic" ? "expanded" : ""}`}
+          >
             <div className="execution-heading">
               <div>
                 <span
@@ -909,7 +731,6 @@ function App() {
               {tab === "Traffic" && (
                 <TrafficPanel
                   state={state}
-                  config={config}
                   path={path}
                   paused={!playing}
                   onTraffic={(rate, requestPath, running) =>
@@ -919,7 +740,13 @@ function App() {
                       running,
                     })
                   }
-                  onConfigure={() => setSelection("backend")}
+                  onConfigure={() =>
+                    setSelection(
+                      nodes.find((n) => n.data.role === "balancer")?.id ??
+                        nodes.find((n) => n.data.role === "backend")?.id ??
+                        "backend",
+                    )
+                  }
                 />
               )}
               {tab === "Requests" && (
@@ -958,6 +785,7 @@ function App() {
                             <span>
                               <small>#{String(r.id).padStart(3, "0")}</small>
                               <b>GET</b> {r.path}
+                              <small title={r.backendId}>{r.backendName}</small>
                             </span>
                             <span
                               className={
@@ -990,8 +818,12 @@ function App() {
                   {events.length > 0 && (
                     <div className="trace-summary">
                       <span>Request #{events[0].request}</span>
-                      <code>GET {result?.path || path}</code>
-                      <span>Request body: empty</span>
+                      <code>GET {tracePath}</code>
+                      <span>
+                        {traceResult?.backendName
+                          ? `Handled by ${traceResult.backendName}`
+                          : "Request body: empty"}
+                      </span>
                     </div>
                   )}
                   {!events.length && (
@@ -1034,445 +866,38 @@ function App() {
             </div>
           </section>
         </main>
-        <aside className="inspector">
-          <div className="panel-heading">
-            <h2>Inspector</h2>
-            <SlidersHorizontal size={15} />
-          </div>
-          <div className="inspector-component">
-            <span className={`catalog-icon ${selection}`}>
-              <SelectedIcon size={22} />
-            </span>
-            <div>
-              <strong>{selectedCatalog.name}</strong>
-              <span>Component configuration</span>
-            </div>
-            <button
-              className="icon-button"
-              title="Remove component"
-              onClick={() => {
-                setNodes((ns) => ns.filter((n) => n.id !== selection));
-                setEdges((es) =>
-                  es.filter(
-                    (e) => e.source !== selection && e.target !== selection,
-                  ),
-                );
-              }}
-            >
-              <Trash2 size={14} />
-            </button>
-          </div>
-          <div className="inspector-tabs">
-            <button
-              className="active"
-              onClick={() =>
-                document
-                  .querySelector(".inspector-scroll")
-                  ?.scrollTo({ top: 0, behavior: "smooth" })
-              }
-            >
-              <Settings2 size={13} /> Configure
-            </button>
-            <button
-              onClick={() =>
-                document
-                  .getElementById("live-state")
-                  ?.scrollIntoView({ behavior: "smooth", block: "center" })
-              }
-            >
-              <Activity size={13} /> Live state
-            </button>
-          </div>
-          <div className="inspector-scroll">
-            <label className="field-label" htmlFor="component-name">
-              NAME
-            </label>
-            <input
-              className="field"
-              id="component-name"
-              aria-label="Component name"
-              value={String(
-                nodes.find((n) => n.id === selection)?.data.name ||
-                  selectedCatalog.name,
-              )}
-              onChange={(e) =>
-                setNodes((ns) =>
-                  ns.map((n) =>
-                    n.id === selection
-                      ? { ...n, data: { ...n.data, name: e.target.value } }
-                      : n,
-                  ),
-                )
-              }
-            />
-            <div className="field-label">
-              TECHNOLOGY <span className="subtle-badge">Preset</span>
-            </div>
-            <div id="technology" className="technology-field">
-              <SelectedIcon size={15} />
-              {selectedCatalog.tech}
-              <Check size={13} />
-            </div>
-            <p className="field-help">
-              {selection === "cache"
-                ? "In-memory key-value storage with expiry and eviction."
-                : selection === "database"
-                  ? "Seeded records with key lookup and modeled read delay."
-                  : selection === "backend"
-                    ? "HTTP routes with cache-aside dependency calls."
-                    : "Sends HTTP requests and receives responses."}
-            </p>
-            <div className="section-divider" />
-            <h3 className="inspector-subtitle">
-              {selection === "cache"
-                ? "Cache behavior"
-                : selection === "backend"
-                  ? "Request behavior"
-                  : selection === "database"
-                    ? "Database behavior"
-                    : "Client behavior"}
-            </h3>
-            {selection === "cache" && (
-              <>
-                <label className="field-label" htmlFor="cache-ttl">
-                  TIME TO LIVE <CircleHelp size={12} />
-                </label>
-                <div className="unit-field">
-                  <input
-                    id="cache-ttl"
-                    aria-label="Cache time to live"
-                    type="number"
-                    min="1"
-                    max="3600"
-                    value={config.ttl}
-                    onChange={(e) =>
-                      update({ ttl: Math.max(1, +e.target.value) })
-                    }
-                  />
-                  <span>seconds</span>
-                </div>
-                <p className="field-help">
-                  How long an entry stays in the cache.
-                </p>
-                <label className="field-label" htmlFor="cache-capacity">
-                  CAPACITY
-                </label>
-                <div className="unit-field">
-                  <input
-                    id="cache-capacity"
-                    aria-label="Cache capacity"
-                    type="number"
-                    min="1"
-                    max="1000"
-                    value={config.capacity}
-                    onChange={(e) =>
-                      update({ capacity: Math.max(1, +e.target.value) })
-                    }
-                  />
-                  <span>entries</span>
-                </div>
-                <label className="field-label" htmlFor="eviction">
-                  EVICTION POLICY
-                </label>
-                <select
-                  className="field"
-                  id="eviction"
-                  aria-label="Eviction policy"
-                  value={config.eviction}
-                  onChange={(e) =>
-                    update({ eviction: e.target.value as Config["eviction"] })
-                  }
-                >
-                  <option value="LRU">Least recently used (LRU)</option>
-                  <option value="FIFO">First in, first out (FIFO)</option>
-                </select>
-                <p className="field-help">
-                  When full, remove the{" "}
-                  {config.eviction === "LRU"
-                    ? "least recently accessed"
-                    : "oldest stored"}{" "}
-                  entry.
-                </p>
-                <div className="field-label">CACHE KEY</div>
-                <div id="cache-key" className="code-field">
-                  user:<span>{"{id}"}</span>
-                </div>
-              </>
-            )}
-            {selection === "backend" && (
-              <>
-                <label className="field-label" htmlFor="route">
-                  GET ROUTE
-                </label>
-                <input
-                  className="field"
-                  id="route"
-                  aria-label="Backend route"
-                  value={config.route}
-                  onChange={(e) => update({ route: e.target.value })}
-                />
-                <label className="field-label" htmlFor="timeout">
-                  DEPENDENCY TIMEOUT
-                </label>
-                <div className="unit-field">
-                  <input
-                    id="timeout"
-                    aria-label="Backend timeout"
-                    type="number"
-                    min="1"
-                    value={config.timeout}
-                    onChange={(e) =>
-                      update({ timeout: Math.max(1, +e.target.value) })
-                    }
-                  />
-                  <span>ms</span>
-                </div>
-                <label className="field-label" htmlFor="backend-concurrency">
-                  CONCURRENCY
-                </label>
-                <div className="unit-field">
-                  <input
-                    id="backend-concurrency"
-                    aria-label="Backend concurrency"
-                    type="number"
-                    min="1"
-                    max="16"
-                    value={config.concurrency}
-                    onChange={(e) =>
-                      update({
-                        concurrency: Math.min(
-                          16,
-                          Math.max(1, Math.floor(+e.target.value)),
-                        ),
-                      })
-                    }
-                  />
-                  <span>requests</span>
-                </div>
-                <label className="field-label" htmlFor="backend-queue-limit">
-                  QUEUE LIMIT
-                </label>
-                <div className="unit-field">
-                  <input
-                    id="backend-queue-limit"
-                    aria-label="Backend queue limit"
-                    type="number"
-                    min="0"
-                    max="500"
-                    value={config.queueLimit}
-                    onChange={(e) =>
-                      update({
-                        queueLimit: Math.min(
-                          500,
-                          Math.max(0, Math.floor(+e.target.value)),
-                        ),
-                      })
-                    }
-                  />
-                  <span>waiting</span>
-                </div>
-                <p className="field-help">
-                  Existing requests finish when concurrency decreases. Queue
-                  limits apply to new arrivals.
-                </p>
-                <div className="info-note">
-                  <Zap size={15} />
-                  <p>
-                    Check the cache first. On a miss, read the database and
-                    store the result.
-                  </p>
-                </div>
-                <p className="field-help">
-                  Up to {config.concurrency} requests run at once. A full queue
-                  returns 429 to new requests.
-                </p>
-              </>
-            )}
-            {selection === "database" && (
-              <>
-                <label className="field-label" htmlFor="availability">
-                  AVAILABILITY
-                </label>
-                <button
-                  id="availability"
-                  className={`availability ${config.online ? "" : "disabled"}`}
-                  onClick={() => update({ online: !config.online })}
-                >
-                  <span className="status-dot" />
-                  {config.online ? "Database online" : "Database offline"}
-                  <span className="toggle">
-                    <i />
-                  </span>
-                </button>
-                <label className="field-label" htmlFor="read-delay">
-                  READ DELAY
-                </label>
-                <div className="unit-field">
-                  <input
-                    id="read-delay"
-                    aria-label="Database read delay"
-                    type="number"
-                    min="1"
-                    value={config.delay}
-                    onChange={(e) =>
-                      update({ delay: Math.max(1, +e.target.value) })
-                    }
-                  />
-                  <span>ms</span>
-                </div>
-                <div className="field-label">SEED RECORDS · USERS</div>
-                {Object.values(config.records).map((record) => (
-                  <div className="record" key={record.id}>
-                    <span className="record-avatar">{record.name[0]}</span>
-                    <div>
-                      <strong>{record.name}</strong>
-                      <small>id: {record.id}</small>
-                    </div>
-                  </div>
-                ))}
-                <button
-                  className="secondary-button"
-                  onClick={() => {
-                    const id = String(
-                      Math.max(0, ...Object.keys(config.records).map(Number)) +
-                        1,
-                    );
-                    update({
-                      records: {
-                        ...config.records,
-                        [id]: {
-                          id,
-                          name: `User ${id}`,
-                          email: `user${id}@example.com`,
-                        },
-                      },
-                    });
-                  }}
-                >
-                  <Plus size={13} /> Add seed record
-                </button>
-              </>
-            )}
-            {selection === "client" && (
-              <>
-                <label className="field-label" htmlFor="client-path">
-                  REQUEST PATH
-                </label>
-                <input
-                  className="field"
-                  id="client-path"
-                  aria-label="Client request path"
-                  value={path}
-                  onChange={(e) => setPath(e.target.value)}
-                />
-                <div className="info-note">
-                  <Globe size={16} />
-                  <p>
-                    Send a request from the execution panel. Select a completed
-                    request to inspect each decision.
-                  </p>
-                </div>
-              </>
-            )}
-            <div className="section-divider" />
-            <div id="live-state" className="state-heading">
-              <h3 className="inspector-subtitle">Live state</h3>
-              <span>
-                <span className="tiny-dot" /> LIVE
-              </span>
-            </div>
-            {selection === "cache" ? (
-              <>
-                <div className="state-metrics">
-                  <div>
-                    <span>Entries</span>
-                    <b>
-                      {state.entries.length}
-                      <small> / {config.capacity}</small>
-                    </b>
-                  </div>
-                  <div>
-                    <span>Hit rate</span>
-                    <b>
-                      {state.hits + state.misses
-                        ? Math.round(
-                            (state.hits / (state.hits + state.misses)) * 100,
-                          )
-                        : 0}
-                      <small>%</small>
-                    </b>
-                  </div>
-                </div>
-                <div className="cache-state">
-                  {state.entries.length ? (
-                    state.entries.map((e) => (
-                      <div key={e.key}>
-                        <code>{e.key}</code>
-                        <span>
-                          {Math.max(
-                            0,
-                            Math.ceil((e.expires - state.now) / 1000),
-                          )}
-                          s
-                        </span>
-                      </div>
-                    ))
-                  ) : (
-                    <>
-                      <Database size={20} />
-                      <span>Your cache is empty.</span>
-                      <small>Send a request to fill it.</small>
-                    </>
-                  )}
-                </div>
-                <button
-                  className="secondary-button"
-                  onClick={() => {
-                    message("expire");
-                    setToast("All cache entries expired");
-                  }}
-                >
-                  <Clock3 size={13} /> Expire all entries
-                </button>
-                <button
-                  className="text-button"
-                  onClick={() =>
-                    message("advance", { value: (config.ttl + 1) * 1000 })
-                  }
-                >
-                  Advance simulated time by {config.ttl + 1}s{" "}
-                  <ArrowRight size={12} />
-                </button>
-              </>
-            ) : (
-              <div className="state-metrics">
-                <div>
-                  <span>
-                    {selection === "database" ? "Reads" : "Completed"}
-                  </span>
-                  <b>
-                    {selection === "database"
-                      ? state.reads
-                      : state.results.length}
-                  </b>
-                </div>
-                <div>
-                  <span>
-                    {selection === "database" ? "Records" : "Waiting"}
-                  </span>
-                  <b>
-                    {selection === "database"
-                      ? Object.keys(config.records).length
-                      : state.queue}
-                  </b>
-                </div>
-              </div>
-            )}
-          </div>
-          <div className="inspector-foot">
-            <Check size={13} /> Changes apply to the next decision
-          </div>
-        </aside>
+        <Inspector
+          node={selectedNode}
+          nodes={nodes}
+          edges={edges}
+          config={config}
+          state={state}
+          path={path}
+          onPath={setPath}
+          onConfig={setConfig}
+          onSelect={setSelection}
+          onRename={(name) =>
+            setNodes((ns) =>
+              ns.map((n) =>
+                n.id === selection ? { ...n, data: { ...n.data, name } } : n,
+              ),
+            )
+          }
+          onRemove={() => {
+            setConfig((current) => {
+              const backendOverrides = { ...current.backendOverrides };
+              delete backendOverrides[selection];
+              return { ...current, backendOverrides };
+            });
+            setNodes((ns) => ns.filter((n) => n.id !== selection));
+            setEdges((es) =>
+              es.filter(
+                (e) => e.source !== selection && e.target !== selection,
+              ),
+            );
+          }}
+          onMessage={message}
+        />
       </div>
       <footer className="statusbar">
         <span>

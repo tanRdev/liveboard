@@ -124,3 +124,21 @@ describe("traffic experiments", () => {
     expect(e.state.entries).toHaveLength(1);
   });
 });
+
+it("keeps every completed request trace after the live event log rolls over", () => {
+  const e = new Engine();
+  e.configure({ ...defaults, concurrency: 4, queueLimit: 500, ttl: 3600 });
+  e.send("/users/1", 100);
+  e.send("/users/1", 30);
+  e.advance(100000);
+  expect(e.state.results).toHaveLength(100);
+  const older = e.state.results.at(-1)!;
+  e.send("/users/2", 100);
+  expect(e.state.events.some((event) => event.request === older.id)).toBe(
+    false,
+  );
+  expect(
+    older.trace.some((event) => event.text.includes("Route matched")),
+  ).toBe(true);
+  expect(older.trace.at(-1)?.text).toContain("response received");
+});
