@@ -1,3 +1,4 @@
+import { serviceSettings, type ServiceSettings } from "./services";
 import {
   CircuitBank,
   connectionDefaults,
@@ -83,6 +84,7 @@ export type Transit = {
   request: number;
 };
 export type Config = {
+  serviceOverrides: Record<string, Partial<ServiceSettings>>;
   resilienceOverrides: Record<string, Partial<ResilienceSettings>>;
   connectionOverrides: Record<string, Partial<ConnectionSettings>>;
   cache: CacheSettings;
@@ -110,6 +112,7 @@ export type Config = {
   balancer: { policy: "round-robin" | "least-connections"; online: boolean };
 };
 export const defaults: Config = {
+  serviceOverrides: {},
   resilienceOverrides: {},
   connectionOverrides: {},
   cache: { ...cacheDefaults },
@@ -227,6 +230,13 @@ export type Result = {
   trace: Trace[];
 };
 type Job = {
+  parent?: Job;
+  rootId?: number;
+  children?: number[];
+  targets?: string[];
+  responses?: Record<string, unknown>;
+  dependencyDeadline?: number;
+  completed?: boolean;
   attempt?: number;
   attemptDeadline?: number;
   generation?: number;
@@ -286,6 +296,7 @@ export class Engine {
   running: Job[] = [];
   nextArrival = Infinity;
   nextId = 1;
+  nextCallId = -1;
   eventId = 1;
   edgeUntil = 0;
   roundRobin = 0;
@@ -408,7 +419,7 @@ export class Engine {
       (job) => this.state.backends[job.backendId!],
     );
     for (const job of removed)
-      this.record(job, 503, { error: "Assigned backend removed" }, "backend");
+      this.complete(job, 503, { error: "Assigned backend removed" }, "backend");
     const cancelled = this.jobs.filter(
       (job) => !this.state.backends[job.backendId!]?.online,
     );
@@ -417,7 +428,7 @@ export class Engine {
     );
     for (const job of cancelled) {
       job.startedAt = this.state.now;
-      this.record(
+      this.complete(
         job,
         503,
         { error: "Assigned backend unavailable" },
@@ -510,7 +521,7 @@ export class Engine {
   ) {
     const event: Trace = {
       id: this.eventId++,
-      request: job.id,
+      request: job.rootId ?? job.id,
       time: this.state.now,
       component,
       text,
@@ -527,7 +538,12 @@ export class Engine {
     if (edge)
       this.state.transit = [
         ...this.state.transit,
-        { edge, reverse, request: job.id, until: this.state.now + 220 },
+        {
+          edge,
+          reverse,
+          request: job.rootId ?? job.id,
+          until: this.state.now + 220,
+        },
       ].slice(-80);
   }
   expire() {
@@ -631,18 +647,22 @@ export class Engine {
       if (!backend?.online || backend.active >= backend.concurrency) continue;
       this.jobs = this.jobs.filter((queued) => queued.id !== job.id);
       job.startedAt = this.state.now;
-      job.deadline = this.state.now + backend.timeout;
+      job.deadline = job.parent
+        ? Math.min(job.deadline, this.state.now + backend.timeout)
+        : this.state.now + backend.timeout;
       job.due = this.state.now + 160;
       this.running.push(job);
       backend.active++;
       this.emit(
         job,
-        "client",
+        job.parent?.backendId ?? "client",
         `GET ${job.path} sent`,
         "info",
-        job.viaBalancer
-          ? `balancer-${job.backendId}`
-          : `client-${job.backendId}`,
+        job.parent
+          ? `${job.parent.backendId}-${job.backendId}`
+          : job.viaBalancer
+            ? `balancer-${job.backendId}`
+            : `client-${job.backendId}`,
       );
     }
     for (const [id, backend] of Object.entries(this.state.backends))
@@ -652,6 +672,12 @@ export class Engine {
     this.state.queue = this.jobs.length;
   }
   record(job: Job, status: number, body: unknown, source: string) {
+    if (job.completed) return;
+    job.completed = true;
+    if (job.parent) {
+      this.recordCall(job, status, body);
+      return;
+    }
     if (
       status >= 400 &&
       body &&
@@ -697,15 +723,232 @@ export class Engine {
     this.onResult(result);
   }
   finish(status: number, body: unknown, source: string) {
-    const job = this.current!;
-    if (job.attemptDeadline !== undefined)
-      this.circuits.cancel(job.backendId!, job.generation ?? 0);
-    this.record(job, status, body, source);
-    this.running = this.running.filter((active) => active.id !== job.id);
-    if (job.backendId && this.state.backends[job.backendId])
-      this.state.backends[job.backendId].active--;
+    this.complete(this.current!, status, body, source);
     this.current = undefined;
     this.startNext();
+  }
+  complete(job: Job, status: number, body: unknown, source: string) {
+    if (job.completed) return;
+    const activeJobs = new Set(this.running);
+    const descendants = [...this.running, ...this.jobs].filter((candidate) => {
+      for (let parent = candidate.parent; parent; parent = parent.parent)
+        if (parent === job) return true;
+      return false;
+    });
+    for (const child of descendants) {
+      child.completed = true;
+      if (child.attemptDeadline !== undefined)
+        this.circuits.cancel(child.backendId!, child.generation ?? 0);
+      if (activeJobs.has(child) && this.state.backends[child.backendId!])
+        this.state.backends[child.backendId!].active--;
+      this.emit(
+        child,
+        child.backendId!,
+        "Call cancelled because its caller finished",
+        "error",
+      );
+    }
+    const cancelled = new Set(descendants);
+    this.running = this.running.filter(
+      (active) => active !== job && !cancelled.has(active),
+    );
+    this.jobs = this.jobs.filter(
+      (queued) => queued !== job && !cancelled.has(queued),
+    );
+    if (job.attemptDeadline !== undefined)
+      this.circuits.cancel(job.backendId!, job.generation ?? 0);
+    if (job.backendId && this.state.backends[job.backendId])
+      this.state.backends[job.backendId].active = this.running.filter(
+        (active) => active.backendId === job.backendId,
+      ).length;
+    this.record(job, status, body, source);
+  }
+  recordCall(job: Job, status: number, body: unknown) {
+    const parent = job.parent!,
+      id = job.backendId!;
+    const backend = this.state.backends[id];
+    if (backend) {
+      backend.completed++;
+      backend.failed += Number(status >= 400);
+    }
+    if (status >= 400 && body && typeof body === "object" && "error" in body)
+      this.emit(job, id, String(body.error), "error");
+    this.emit(
+      job,
+      id,
+      `${status} ${status === 200 ? "OK" : "Error"} · return to ${parent.backendName}`,
+      status >= 400 ? "error" : "info",
+      `${parent.backendId}-${id}`,
+      true,
+    );
+    if (parent.completed) return;
+    parent.children = parent.children?.filter((child) => child !== job.id);
+    if (status >= 400) {
+      this.emit(
+        parent,
+        parent.backendId!,
+        `Dependency ${job.backendName} failed with ${status}`,
+        "error",
+      );
+      this.complete(
+        parent,
+        status,
+        {
+          error: `Dependency ${job.backendName} failed`,
+          dependency: id,
+          cause: body,
+        },
+        "service",
+      );
+      return;
+    }
+    (parent.responses ??= {})[id] = body;
+    if (!parent.children?.length) this.dispatchCalls(parent);
+  }
+  dispatchCalls(job: Job) {
+    const settings = serviceSettings(this.config, job.backendId!);
+    const targets = job.targets ?? [];
+    if (!targets.length) {
+      this.serviceResponse(job);
+      return;
+    }
+    const batch =
+      settings.calls === "parallel" ? targets.splice(0) : targets.splice(0, 1);
+    this.emit(
+      job,
+      job.backendId!,
+      `Call ${batch.length} ${batch.length === 1 ? "dependency" : "dependencies"} · ${settings.calls}`,
+    );
+    for (const id of batch) {
+      if (job.completed) break;
+      const backend = this.state.backends[id];
+      const ancestry: string[] = [];
+      for (
+        let ancestor: Job | undefined = job;
+        ancestor;
+        ancestor = ancestor.parent
+      )
+        ancestry.push(ancestor.backendId!);
+      if (ancestry.includes(id) || ancestry.length >= 8) {
+        this.complete(
+          job,
+          503,
+          { error: "Service dependency cycle or depth limit reached" },
+          "topology",
+        );
+        break;
+      }
+      const call: Job = {
+        id: this.nextCallId--,
+        rootId: job.rootId ?? job.id,
+        parent: job,
+        path: backendSettings(this.config, id).route.replace(
+          ":id",
+          job.path.split("/").pop()!,
+        ),
+        key: job.key,
+        start: this.state.now,
+        startedAt: this.state.now,
+        stage: 0,
+        deadline: Math.min(job.deadline, job.dependencyDeadline!),
+        due: 0,
+        backendId: id,
+        backendName: backend?.name ?? id,
+        trace: job.trace,
+      };
+      (job.children ??= []).push(call.id);
+      this.emit(
+        call,
+        job.backendId!,
+        `GET ${call.path} · call ${call.backendName}`,
+        "info",
+        `${job.backendId}-${id}`,
+      );
+      if (!backend?.online || !this.connected(job.backendId!, id)) {
+        this.record(call, 503, { error: "Dependency unavailable" }, "service");
+        break;
+      }
+      backend.assigned++;
+      if (
+        backend.active >= backend.concurrency &&
+        backend.queued >= backend.queueLimit
+      ) {
+        backend.rejected++;
+        this.record(
+          call,
+          429,
+          { error: "Dependency queue is full" },
+          "overload",
+        );
+        break;
+      }
+      this.jobs.push(call);
+      this.startNext();
+      this.state.peakQueue = Math.max(this.state.peakQueue, this.jobs.length);
+    }
+  }
+  serviceResponse(job: Job) {
+    job.dependencyDeadline = undefined;
+    const settings = serviceSettings(this.config, job.backendId!);
+    const body = {
+      service: job.backendName,
+      id: job.path.split("/").pop(),
+      dependencies: job.responses ?? {},
+    };
+    if (settings.publish !== "none") {
+      const target = settings.publish;
+      if (!this.hasRole(target) || !this.connected(job.backendId!, target)) {
+        this.complete(
+          job,
+          503,
+          { error: `Connect this service to ${target} before publishing` },
+          "messaging",
+        );
+        return;
+      }
+      const before =
+        target === "queue"
+          ? this.queueLab.state.published
+          : this.kafka.state.produced;
+      if (target === "queue")
+        this.queueLab.publish(body, 1, this.state.now, job.backendId!, true);
+      else
+        this.kafka.produce(
+          job.key,
+          body,
+          1,
+          this.state.now,
+          job.backendId!,
+          true,
+        );
+      this.syncLabs();
+      const after =
+        target === "queue"
+          ? this.queueLab.state.published
+          : this.kafka.state.produced;
+      this.emit(
+        job,
+        job.backendId!,
+        after > before
+          ? `Published fulfillment event to ${target}`
+          : `Publish to ${target} failed`,
+        after > before ? "info" : "error",
+        `${job.backendId}-${target}`,
+      );
+      if (after === before) {
+        this.complete(
+          job,
+          503,
+          { error: `Publish to ${target} failed` },
+          "messaging",
+        );
+        return;
+      }
+    }
+    job.body = body;
+    job.responseSource = "service";
+    job.stage = 11;
+    job.due = this.state.now + 160;
   }
   scheduleDatabase(job: Job) {
     const id = job.backendId!,
@@ -780,7 +1023,12 @@ export class Engine {
       this.queueLab.nextTime(),
       this.database.nextTime(),
       ...this.running.map((job) =>
-        Math.min(job.due, job.deadline, job.attemptDeadline ?? Infinity),
+        Math.min(
+          job.due,
+          job.deadline,
+          job.attemptDeadline ?? Infinity,
+          job.dependencyDeadline ?? Infinity,
+        ),
       ),
     );
   }
@@ -806,14 +1054,28 @@ export class Engine {
     }
     const job = [...this.running].sort(
       (a, b) =>
-        Math.min(a.due, a.deadline, a.attemptDeadline ?? Infinity) -
-          Math.min(b.due, b.deadline, b.attemptDeadline ?? Infinity) ||
-        a.id - b.id,
+        Math.min(
+          a.due,
+          a.deadline,
+          a.attemptDeadline ?? Infinity,
+          a.dependencyDeadline ?? Infinity,
+        ) -
+          Math.min(
+            b.due,
+            b.deadline,
+            b.attemptDeadline ?? Infinity,
+            b.dependencyDeadline ?? Infinity,
+          ) || a.id - b.id,
     )[0];
     if (
       !job ||
       this.nextArrival <
-        Math.min(job.due, job.deadline, job.attemptDeadline ?? Infinity)
+        Math.min(
+          job.due,
+          job.deadline,
+          job.attemptDeadline ?? Infinity,
+          job.dependencyDeadline ?? Infinity,
+        )
     ) {
       this.send(this.state.traffic.path);
       this.nextArrival += 1000 / this.state.traffic.rate;
@@ -821,7 +1083,10 @@ export class Engine {
     }
     this.current = job;
     const j = job;
-    if (this.state.now >= j.deadline) {
+    if (
+      this.state.now >= j.deadline ||
+      this.state.now >= (j.dependencyDeadline ?? Infinity)
+    ) {
       if (j.attemptDeadline !== undefined)
         this.circuits.failure(
           j.backendId!,
@@ -864,14 +1129,40 @@ export class Engine {
       this.dependencyFailure(j, 504, "Database call timed out");
       return;
     }
+    if (j.parent && !this.connected(j.parent.backendId!, j.backendId!)) {
+      this.finish(
+        503,
+        { error: "Service response path unavailable" },
+        "topology",
+      );
+      return;
+    }
+    if (j.stage === 11) {
+      if (j.viaBalancer) {
+        this.emit(
+          j,
+          "balancer",
+          `Response from ${j.backendName}`,
+          "info",
+          `balancer-${j.backendId}`,
+          true,
+        );
+        j.stage = 8;
+        j.due = this.state.now + 80;
+      } else this.finish(200, j.body, "service");
+      return;
+    }
     if (j.stage === 9) {
       this.scheduleDatabase(j);
       return;
     }
     if (j.stage === 0) {
       if (
-        !this.hasRole("client") ||
-        !this.connected(j.viaBalancer ? "balancer" : "client", j.backendId!)
+        (!j.parent && !this.hasRole("client")) ||
+        !this.connected(
+          j.parent?.backendId ?? (j.viaBalancer ? "balancer" : "client"),
+          j.backendId!,
+        )
       ) {
         this.finish(
           503,
@@ -893,6 +1184,26 @@ export class Engine {
       j.stage = 1;
       j.due = this.state.now + 120 + settings.processingDelay;
     } else if (j.stage === 1) {
+      if (serviceSettings(this.config, j.backendId!).mode === "handler") {
+        j.stage = 10;
+        j.due = Infinity;
+        j.targets = components(this.config)
+          .filter(
+            (part) =>
+              part.role === "backend" && this.connected(j.backendId!, part.id),
+          )
+          .map((part) => part.id);
+        if (j.targets.length) {
+          j.dependencyDeadline = Math.min(
+            j.deadline,
+            this.state.now +
+              serviceSettings(this.config, j.backendId!).dependencyTimeout,
+          );
+          this.dispatchCalls(j);
+        } else this.serviceResponse(j);
+        this.startNext();
+        return;
+      }
       if (
         !this.hasRole("cache") ||
         !connected("cache") ||

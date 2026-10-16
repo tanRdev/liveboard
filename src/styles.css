@@ -3431,3 +3431,344 @@ a {
   max-height: none;
   z-index: 5;
 }
+
+/* The board keeps most of the workspace until a user expands a tool. */
+.topbar {
+  height: 48px;
+  padding-inline: 20px;
+}
+.brand {
+  font-size: 21px;
+}
+.brand-icon {
+  width: 29px;
+  height: 29px;
+}
+.projectbar {
+  height: 52px;
+  padding-inline: 20px;
+}
+.app-shell {
+  min-height: 600px;
+}
+.main-layout {
+  grid-template-columns: 220px minmax(0, 1fr) 270px;
+}
+.library {
+  padding: 18px 14px;
+}
+.canvas-top {
+  padding-inline: 14px;
+}
+.canvas-layout-controls {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+}
+.canvas-layout-controls .icon-button[aria-pressed="true"] {
+  background: #eef3ef;
+  color: #326447;
+}
+.canvas-layout-controls .focus-button {
+  margin: 0 4px;
+  white-space: nowrap;
+}
+.canvas {
+  min-height: 240px;
+  background: #f6f9f8;
+}
+.canvas-info {
+  top: 14px;
+  left: 18px;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.canvas-info .scenario-label {
+  flex-shrink: 0;
+  color: #597568;
+  font-size: 8px;
+  letter-spacing: 0.7px;
+}
+.canvas-info p {
+  margin: 0;
+  color: #7a8a80;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.execution,
+.focus-mode .execution.expanded {
+  position: relative;
+  height: 230px;
+  min-height: 180px;
+  max-height: 46%;
+}
+.execution.expanded {
+  height: 290px;
+}
+.execution.interview-expanded {
+  height: 330px;
+  min-height: 200px;
+  max-height: 48%;
+}
+.execution-heading {
+  height: 44px;
+  min-height: 44px;
+  padding-inline: 14px;
+}
+.execution-toggle {
+  padding: 5px 3px;
+  gap: 6px;
+  border-radius: 4px;
+}
+.execution-toggle:hover {
+  background: #f0f5f1;
+}
+.execution-collapsed > :not(.execution-heading) {
+  display: none !important;
+}
+.execution-resize {
+  position: absolute;
+  top: -5px;
+  height: 9px;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+  touch-action: none;
+  z-index: 6;
+}
+.execution-resize > span {
+  width: 44px;
+  height: 3px;
+  border-radius: 4px;
+  background: #bdcdc4;
+  transition: width 120ms;
+}
+.execution-resize:hover > span,
+.execution-resize:focus-visible > span {
+  background: #32795a;
+  width: 65px;
+}
+.library-hidden .main-layout {
+  grid-template-columns: minmax(0, 1fr) 270px;
+}
+.inspector-hidden .main-layout {
+  grid-template-columns: 220px minmax(0, 1fr);
+}
+.library-hidden.inspector-hidden .main-layout,
+.focus-mode .main-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+.library-hidden .library,
+.inspector-hidden .inspector {
+  display: none;
+}
+.edge-label {
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-size: 9px;
+  background: #f6f9f8ee;
+}
+.edge-label-active {
+  border-color: #f4c598;
+  background: #fff8ec;
+  color: #a44e08;
+  box-shadow: 0 2px 7px #713a1010;
+}
+.edge-label-active[data-direction="response"] {
+  color: #036995;
+  background: #edfaff;
+  border-color: #a3d7ef;
+}
+.edge-label-active[data-direction="both"] {
+  color: #6d28d9;
+  background: #f6f0ff;
+  border-color: #d3baf9;
+}
+.edge-volume {
+  color: inherit;
+}
+.traffic-packet {
+  animation-duration: 0.2s;
+  pointer-events: none;
+}
+.traffic-arrow {
+  filter: drop-shadow(0 1px 2px #273c3440);
+}
+.traffic-glow {
+  pointer-events: none;
+}
+.edge-active .react-flow__edge-path {
+  stroke-dasharray: 9 5 !important;
+}
+.legend-request,
+.legend-response {
+  height: 3px;
+  width: 17px;
+  border: 0;
+  border-radius: 3px;
+}
+.legend-request {
+  background: #e8790c;
+}
+.legend-response {
+  background: #0284c7;
+}
+.challenge-process {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+  padding: 10px 12px 10px 30px;
+  margin: 10px 0 16px;
+  border: 1px solid #dce8df;
+  border-radius: 7px;
+  background: #f6faf7;
+  font-size: 11px;
+  color: #4f705d;
+}
+.challenge-process li {
+  padding-left: 2px;
+}
+.challenge-submission-status {
+  color: #6a7c70;
+  font-size: 10px;
+  line-height: 1.6;
+}
+@media (max-width: 1200px) {
+  .main-layout {
+    grid-template-columns: 195px minmax(0, 1fr) 250px;
+  }
+  .inspector-hidden .main-layout {
+    grid-template-columns: 195px minmax(0, 1fr);
+  }
+  .library-hidden .main-layout {
+    grid-template-columns: minmax(0, 1fr) 250px;
+  }
+  .canvas-caption {
+    display: none;
+  }
+  .canvas-top {
+    padding-inline: 9px;
+  }
+  .canvas-layout-controls .focus-button {
+    font-size: 9px;
+  }
+  .project-actions {
+    gap: 4px;
+  }
+}
+@media (max-width: 1000px) {
+  .main-layout,
+  .library-hidden .main-layout {
+    grid-template-columns: minmax(0, 1fr) 250px;
+  }
+  .library {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 230px;
+    z-index: 10;
+    box-shadow: 7px 0 25px #28453620;
+  }
+  .main-layout {
+    position: relative;
+  }
+  .inspector-hidden .main-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .main-layout > .inspector {
+    display: flex;
+  }
+  .inspector-hidden .main-layout > .inspector,
+  .focus-mode .main-layout > .inspector {
+    display: none;
+  }
+  .workspace,
+  .top-divider,
+  .project-badge {
+    display: none;
+  }
+  .project-title input {
+    width: 130px;
+  }
+  .project-actions .plain-button {
+    font-size: 10px;
+    padding: 6px;
+  }
+  .canvas-info {
+    display: block;
+  }
+  .canvas-info p {
+    margin-top: 4px;
+    font-size: 9px;
+  }
+}
+@media (max-width: 700px) {
+  .main-layout,
+  .library-hidden .main-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .main-layout > .inspector {
+    position: absolute;
+    right: 0;
+    top: 43px;
+    bottom: 0;
+    width: min(300px, 82vw);
+    z-index: 9;
+    background: #fff;
+    box-shadow: -7px 0 25px #28453620;
+  }
+  .projectbar {
+    padding-inline: 10px;
+    overflow-x: auto;
+    gap: 14px;
+  }
+  .project-actions {
+    flex-shrink: 0;
+  }
+  .project-title {
+    flex-shrink: 0;
+  }
+  .canvas-layout-controls .focus-button {
+    font-size: 0;
+    gap: 0;
+  }
+  .canvas-layout-controls .focus-button svg {
+    width: 16px;
+    height: 16px;
+  }
+  .canvas-bottom > span {
+    display: none;
+  }
+  .canvas-bottom {
+    justify-content: flex-end;
+  }
+  .canvas-info p {
+    max-width: 80%;
+  }
+  .execution-tabs {
+    overflow-x: auto;
+    flex-shrink: 0;
+  }
+  .execution-tabs > button {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .traffic-packet {
+    offset-distance: 50%;
+  }
+}
+.app-shell.focus-mode .main-layout,
+.app-shell.library-hidden.inspector-hidden .main-layout {
+  grid-template-columns: minmax(0, 1fr);
+}

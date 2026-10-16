@@ -135,10 +135,16 @@ export class QueueLab {
     }
     this.pump();
   }
-  publish(value: unknown, count: number, now: number) {
+  publish(
+    value: unknown,
+    count: number,
+    now: number,
+    source = "producer",
+    connected = this.connected,
+  ) {
     this.now = now;
     for (let i = 0; i < Math.min(100, Math.max(1, count)); i++) {
-      if (!this.enabled || !this.connected || !this.config.online) {
+      if (!this.enabled || !connected || !this.config.online) {
         this.state.rejected++;
         this.emit(
           "Publish failed · connect producer to an online queue",
@@ -167,7 +173,7 @@ export class QueueLab {
       };
       this.state.messages.push(message);
       this.state.published++;
-      this.emit(`Published message ${message.id}`, "producer-queue");
+      this.emit(`Published message ${message.id}`, `${source}-queue`);
     }
     this.pump();
   }

@@ -19,6 +19,7 @@ import {
   type Board,
 } from "./board";
 import { configFingerprint, experimentDefaults } from "./experiments";
+import { createChallengeReportHtml } from "./challengeReport";
 import { Numeric, Option } from "./TechnologyInspector";
 import type { ChallengeProgress, ChallengeStatus } from "./useChallengeSession";
 type Props = {
@@ -249,6 +250,11 @@ function Play(props: Props & { active: ChallengeDefinition }) {
         </div>
         <h3>{active.title}</h3>
         <p>{active.problem}</p>
+        <ol className="challenge-process" aria-label="Interview exercise steps">
+          <li>Inspect the baseline</li>
+          <li>Repair the board</li>
+          <li>Verify and submit</li>
+        </ol>
         <div className="challenge-play-actions">
           <button
             className="save-button"
@@ -367,12 +373,43 @@ function Play(props: Props & { active: ChallengeDefinition }) {
             Download candidate submission
           </button>
           <button
+            className="secondary-button challenge-report-download"
+            disabled={!report || !current}
+            onClick={() => {
+              if (!report) return;
+              try {
+                const html = createChallengeReportHtml(active, board, report);
+                const url = URL.createObjectURL(
+                    new Blob([html], { type: "text/html" }),
+                  ),
+                  link = document.createElement("a");
+                link.href = url;
+                link.download = `${active.id}-assessment.html`;
+                link.click();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+              } catch (error) {
+                props.onToast(
+                  error instanceof Error
+                    ? error.message
+                    : "Verify this design first.",
+                );
+              }
+            }}
+          >
+            Download assessment
+          </button>
+          <button
             className="text-button"
             onClick={() => download(`${active.id}.json`, active)}
           >
             Exercise file
           </button>
         </div>
+        <p className="field-help challenge-submission-status">
+          {current
+            ? "This revision has verified results. The submission includes the design, notes, and assessment."
+            : "You can submit this design now. Verify this revision to attach current results."}
+        </p>
         <p className="field-help">
           Reviewers import the original exercise before a submission, then run
           verification against the original definition.

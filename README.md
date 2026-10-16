@@ -19,3 +19,14 @@ Open the local URL printed by Vite.
 npm test
 npm run build
 ```
+
+## Preview a release build
+
+```sh
+npm run check
+npm run preview
+```
+
+The build output is `dist/`. Serve the entire directory, including the worker and lazy-loaded assets under `assets/`.
+
+GitHub Actions runs tests and builds the app. Each successful run saves a `liveboard-static-build` artifact. The workflow does not deploy.

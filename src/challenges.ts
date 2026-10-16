@@ -10,6 +10,7 @@ import {
   connectionSettings,
   type Config,
 } from "./engine";
+import { serviceSettings } from "./services";
 import {
   ExperimentRunner,
   experimentDefaults,
@@ -29,6 +30,7 @@ export const protectedFields = [
   "network",
   "cacheTechnology",
   "gateway",
+  "services",
 ] as const;
 export type ProtectedField = (typeof protectedFields)[number];
 export const protectionLabels: Record<ProtectedField, string> = {
@@ -42,6 +44,7 @@ export const protectionLabels: Record<ProtectedField, string> = {
   network: "Database connection conditions",
   cacheTechnology: "Cache technology",
   gateway: "Gateway traffic contract",
+  services: "Service behavior, dependency calls, and publishing",
 };
 export type ChallengeRules = {
   maxBackends: number;
@@ -265,6 +268,8 @@ function protectedValue(
   if (field === "network")
     return ids.map((id) => [id, connectionSettings(config, `${id}-database`)]);
   if (field === "cacheTechnology") return config.cache.technology;
+  if (field === "services")
+    return ids.map((id) => [id, serviceSettings(config, id)]);
   return config[field];
 }
 export function checkConstraints(

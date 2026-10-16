@@ -7,6 +7,7 @@ import {
 } from "./challenges";
 import { experimentDefaults } from "./experiments";
 import { defaultBrief } from "./interview";
+import { checkoutScenario } from "./checkout";
 function test(
   id: string,
   label: string,
@@ -91,6 +92,9 @@ function catalog(): ChallengeDefinition[] {
   };
   uneven.config.timeout = 4000;
   uneven.config.queueLimit = 30;
+  const checkout = checkoutScenario();
+  checkout.config.concurrency = 4;
+  checkout.config.backendOverrides!["backend-3"].concurrency = 1;
   return [
     challenge(
       "launch-day",
@@ -223,6 +227,39 @@ function catalog(): ChallengeDefinition[] {
         "Equal request counts can be unfair when service times differ.",
         "Compare per-instance waiting work and use capacity where it processes the most requests.",
         "Try least-connections routing, two execution slots per backend.",
+      ],
+    ),
+    challenge(
+      "checkout-capacity",
+      "Checkout under pressure",
+      "Advanced",
+      "A checkout API calls inventory and payments, then queues fulfillment. Normal traffic succeeds, but a promotion overloads payments. Meet both workloads with at most 14 execution slots. Keep every required call and publish fulfillment only after both dependencies succeed.",
+      checkout,
+      {
+        maxBackends: 3,
+        maxSlots: 14,
+        maxQueue: 20,
+        maxTimeout: 2500,
+        locked: [...ruleDefaults.locked, "connections", "services"],
+      },
+      [
+        test("normal", "Normal checkout traffic", {
+          path: "/checkout/1",
+          rate: 1,
+          seconds: 8,
+          targetP95: 1800,
+        }),
+        test("promotion", "Promotion checkout traffic", {
+          path: "/checkout/1",
+          rate: 3,
+          seconds: 15,
+          targetP95: 1800,
+        }),
+      ],
+      [
+        "Inspect waiting work on each service. The checkout API retains its execution slot while dependencies run.",
+        "Increasing the checkout queue cannot increase the payments service capacity.",
+        "Try six checkout slots, four inventory slots, and four payments slots. Keep dependency calls parallel.",
       ],
     ),
   ];

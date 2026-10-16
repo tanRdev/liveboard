@@ -310,12 +310,19 @@ export class KafkaLab {
     this.state.groups = [...this.groups.values()];
     this.state.active = this.jobs.length;
   }
-  produce(key: string, value: unknown, count: number, now: number) {
+  produce(
+    key: string,
+    value: unknown,
+    count: number,
+    now: number,
+    source = "producer",
+    connected = this.producerConnected,
+  ) {
     this.now = now;
     for (let i = 0; i < Math.min(100, Math.max(1, count)); i++) {
       if (
         !this.enabled ||
-        !this.producerConnected ||
+        !connected ||
         !this.config.online ||
         this.config.inSyncReplicas < 1
       ) {
@@ -360,18 +367,18 @@ export class KafkaLab {
       this.state.produced++;
       this.state.reply = `Acknowledged ${this.config.topic} · partition ${partition} · offset ${record.offset}`;
       this.emit(
-        "producer",
+        source,
         `Produce ${key || "(no key)"} → p${partition} @ ${record.offset}`,
         record,
         undefined,
-        "producer-stream",
+        `${source}-stream`,
       );
       this.emit(
         "stream",
         `acks=${this.producer.acks} · ${this.config.inSyncReplicas} in-sync replicas`,
         record,
         undefined,
-        "producer-stream",
+        `${source}-stream`,
         false,
         true,
       );

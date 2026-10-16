@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "preview": "vite preview --host 0.0.0.0",
+    "check": "npm test && npm run build"
   },
   "dependencies": {
     "@xyflow/react": "^12.9.0",

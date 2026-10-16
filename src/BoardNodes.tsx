@@ -22,6 +22,7 @@ import {
   type Snapshot,
 } from "./engine";
 import { icons } from "./visuals";
+import { serviceSettings } from "./services";
 export function ComponentNode({ id, data, selected }: NodeProps) {
   const updateNodeInternals = useUpdateNodeInternals();
   useEffect(() => {
@@ -86,7 +87,10 @@ export function ComponentNode({ id, data, selected }: NodeProps) {
             </div>
             <div className="node-detail">
               <span>
-                <span className="tiny-dot" /> Cache-aside
+                <span className="tiny-dot" />{" "}
+                {serviceSettings(config, id).mode === "handler"
+                  ? `${serviceSettings(config, id).calls} calls${serviceSettings(config, id).publish === "none" ? "" : " · publish"}`
+                  : "Cache-aside"}
               </span>
               <span>
                 {queued
@@ -347,23 +351,48 @@ export function ComponentNode({ id, data, selected }: NodeProps) {
     </div>
   );
 }
+function trafficAppearance(forward: number, backward: number) {
+  const direction =
+    forward && backward ? "both" : backward ? "response" : "request";
+  const color = { both: "#7c3aed", response: "#0284c7", request: "#e8790c" }[
+    direction
+  ];
+  return { direction, color };
+}
+
 export function TrafficEdge(props: EdgeProps) {
   const [path, x, y] = getSmoothStepPath(props);
   const forward = Number(props.data?.forward ?? 0);
   const backward = Number(props.data?.backward ?? 0);
   const count = forward + backward;
+  const { color, direction } = trafficAppearance(forward, backward);
+  const directionStyle = {
+    ...props.style,
+    ...(count ? { stroke: color, strokeWidth: 3 } : {}),
+  };
   return (
     <>
       <BaseEdge
         id={props.id}
         path={path}
-        style={props.style}
-        markerEnd={props.markerEnd}
+        style={directionStyle}
+        markerEnd={count ? undefined : props.markerEnd}
       />
+      {count > 0 && (
+        <path
+          className="traffic-glow"
+          d={path}
+          fill="none"
+          stroke={color}
+          strokeWidth={12}
+          opacity={0.12}
+        />
+      )}
       {props.label && (
         <EdgeLabelRenderer>
           <div
-            className="edge-label"
+            className={`edge-label ${count ? "edge-label-active" : ""}`}
+            data-direction={direction}
             style={{
               transform: `translate(-50%, -50%) translate(${x}px,${y}px)`,
             }}
@@ -373,28 +402,61 @@ export function TrafficEdge(props: EdgeProps) {
           </div>
         </EdgeLabelRenderer>
       )}
-      {[
-        { count: forward, reverse: false },
-        { count: backward, reverse: true },
-      ]
-        .filter((direction) => direction.count > 0)
-        .map((direction) => (
-          <circle
-            key={String(direction.reverse)}
-            className="traffic-packet"
-            r={direction.count > 1 ? 5 : 4}
-            fill={direction.reverse ? "#8a9fba" : "#56885d"}
-            stroke="white"
-            strokeWidth="1.5"
-            style={{
-              offsetPath: `path("${path}")`,
-              animationDirection: direction.reverse ? "reverse" : "normal",
-              animationPlayState: props.data?.playing ? "running" : "paused",
-            }}
-          />
-        ))}
+      <TrafficPackets
+        path={path}
+        count={forward}
+        reverse={false}
+        playing={Boolean(props.data?.playing)}
+      />
+      <TrafficPackets
+        path={path}
+        count={backward}
+        reverse={true}
+        playing={Boolean(props.data?.playing)}
+      />
     </>
   );
+}
+
+function TrafficPackets({
+  path,
+  count,
+  reverse,
+  playing,
+}: {
+  path: string;
+  count: number;
+  reverse: boolean;
+  playing: boolean;
+}) {
+  const color = reverse ? "#0284c7" : "#e8790c";
+  return Array.from({ length: Math.min(count, 3) }, (_, index) => {
+    const motion = {
+      offsetPath: `path("${path}")`,
+      animationDirection: reverse ? "reverse" : "normal",
+      animationDelay: `${index * -0.16}s`,
+      animationPlayState: playing ? "running" : "paused",
+    };
+    return (
+      <g key={index}>
+        <circle
+          className="traffic-packet traffic-halo"
+          r={8}
+          fill={color}
+          opacity={0.18}
+          style={motion}
+        />
+        <path
+          className="traffic-packet traffic-arrow"
+          d="M -6,-5 L 5,0 L -6,5 L -3,0 Z"
+          fill={color}
+          stroke="white"
+          strokeWidth={1.2}
+          style={{ ...motion, offsetRotate: reverse ? "auto 180deg" : "auto" }}
+        />
+      </g>
+    );
+  });
 }
 
 export function AutoFit({ structureKey }: { structureKey: string }) {

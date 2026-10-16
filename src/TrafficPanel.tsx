@@ -5,6 +5,7 @@ import type { Snapshot } from "./engine";
 type Props = {
   state: Snapshot;
   path: string;
+  dependencies: string[];
   paused: boolean;
   onTraffic: (rate: number, path: string, running: boolean) => void;
   onConfigure: () => void;
@@ -13,6 +14,7 @@ type Props = {
 export default function TrafficPanel({
   state,
   path,
+  dependencies,
   paused,
   onTraffic,
   onConfigure,
@@ -26,8 +28,10 @@ export default function TrafficPanel({
     ? Math.round((metrics.failed / metrics.completed) * 100)
     : 0;
   const targets = Object.entries(state.backends);
+  const dependencyIds = new Set(dependencies);
   const reachable = targets.filter(
-    ([, backend]) => backend.online && backend.reachable,
+    ([id, backend]) =>
+      backend.online && (backend.reachable || dependencyIds.has(id)),
   );
   const concurrency = reachable.reduce(
     (sum, [, backend]) => sum + backend.concurrency,
@@ -91,14 +95,14 @@ export default function TrafficPanel({
       </div>
       <div className="traffic-metrics">
         <div>
-          <span>In flight</span>
+          <span>Active service work</span>
           <strong>
             {state.activeCount}
             <small> / {concurrency}</small>
           </strong>
         </div>
         <div>
-          <span>Waiting</span>
+          <span>Waiting work</span>
           <strong>
             {state.queue}
             <small> / {queueLimit}</small>
@@ -127,7 +131,7 @@ export default function TrafficPanel({
         <span>{metrics.completed} responses</span>
         <span>{metrics.rejected} rejected · 429</span>
         <span>Peak queue {state.peakQueue}</span>
-        <span>Full queues reject new requests.</span>
+        <span>Each service has its own slots and queue.</span>
       </div>
       <div className="distribution-heading">
         <span>BACKEND DISTRIBUTION</span>
@@ -138,7 +142,7 @@ export default function TrafficPanel({
       <div className="distribution-table">
         <div className="distribution-columns">
           <span>INSTANCE</span>
-          <span>ROUTED</span>
+          <span>ASSIGNED</span>
           <span>ACTIVE</span>
           <span>WAITING</span>
           <span>FAILED</span>
@@ -147,14 +151,16 @@ export default function TrafficPanel({
           <div className="distribution-row" key={id}>
             <span>
               <i
-                className={`status-dot ${backend.online && backend.reachable ? "" : "offline"}`}
+                className={`status-dot ${backend.online && (backend.reachable || dependencyIds.has(id)) ? "" : "offline"}`}
               />
               <strong>{backend.name}</strong>
               <small>
                 {backend.online
                   ? backend.reachable
                     ? ""
-                    : "not routed"
+                    : dependencyIds.has(id)
+                      ? "service dependency"
+                      : "not routed"
                   : "offline"}
               </small>
             </span>

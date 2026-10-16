@@ -3,6 +3,12 @@ import type { ConsumerConfig } from "./kafka";
 import type { WorkerConfig } from "./queue";
 type Rule = readonly string[] | readonly [number, number] | "boolean" | "text";
 const schemas: Record<string, Record<string, Rule>> = {
+  service: {
+    mode: ["data", "handler"],
+    calls: ["parallel", "sequential"],
+    dependencyTimeout: [1, 60000],
+    publish: ["none", "queue", "stream"],
+  },
   cache: {
     technology: ["generic", "redis", "memcached"],
     online: "boolean",
@@ -148,6 +154,7 @@ export function parseSettings(raw: Record<string, unknown>, config: Config) {
     }
   }
   for (const [key, schema] of [
+    ["serviceOverrides", "service"],
     ["resilienceOverrides", "resilience"],
     ["connectionOverrides", "connection"],
   ] as const) {
@@ -157,7 +164,7 @@ export function parseSettings(raw: Record<string, unknown>, config: Config) {
     for (const [id, value] of Object.entries(raw[key])) {
       if (
         !(
-          key === "resilienceOverrides"
+          key !== "connectionOverrides"
             ? /^backend(?:-[2-8])?$/
             : /^backend(?:-[2-8])?-database$/
         ).test(id)

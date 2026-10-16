@@ -24,6 +24,8 @@ import {
   type Role,
   type Snapshot,
 } from "./engine";
+import ServiceControls from "./ServiceControls";
+import { serviceSettings } from "./services";
 import { ResilienceControls } from "./ResilienceControls";
 import TechnologyInspector from "./TechnologyInspector";
 import { catalog } from "./board";
@@ -399,13 +401,29 @@ export default function Inspector({
               </>
             )}
             {role === "backend" && (
-              <ResilienceControls
+              <ServiceControls
                 id={node.id}
-                config={config}
-                state={state}
+                config={{
+                  ...config,
+                  components: nodes.map((n) => ({
+                    id: n.id,
+                    role: n.data.role as Role,
+                    name: String(n.data.name),
+                  })),
+                  links: edges.map((e) => `${e.source}-${e.target}`),
+                }}
                 onConfig={onConfig}
               />
             )}
+            {role === "backend" &&
+              serviceSettings(config, node.id).mode === "data" && (
+                <ResilienceControls
+                  id={node.id}
+                  config={config}
+                  state={state}
+                  onConfig={onConfig}
+                />
+              )}
             {role === "balancer" && (
               <>
                 <h3 className="inspector-subtitle">Routing behavior</h3>

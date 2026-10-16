@@ -522,6 +522,6 @@ export function canConnect(source: Node, target: Node): boolean {
         ["backend", "balancer"].includes(String(target.data.role))) ||
       (source.data.role === "balancer" && target.data.role === "backend") ||
       (source.data.role === "backend" &&
-        ["cache", "database"].includes(String(target.data.role))))
+        ["backend", "cache", "database", "queue", "stream"].includes(String(target.data.role))))
   );
 }

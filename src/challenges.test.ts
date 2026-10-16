@@ -53,6 +53,10 @@ function solution(index: number) {
         maxRetries: 0,
       };
       break;
+    case 5:
+      board.config.concurrency = 6;
+      board.config.backendOverrides!["backend-3"].concurrency = 4;
+      break;
     case 4:
       board.config.balancer.policy = "least-connections";
       board.config.concurrency = 2;
