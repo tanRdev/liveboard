@@ -1,5 +1,5 @@
 import { parseBrief, type InterviewBrief } from "./interview";
-import { MarkerType, type Node, type Edge } from "@xyflow/react";
+import type { MarkerType, Node, Edge } from "@xyflow/react";
 import { parseSettings } from "./settings";
 import { defaults, type Config, type Role } from "./engine";
 export const catalog: {
@@ -131,7 +131,7 @@ export function createEdge(source: string, target: string): Edge {
                 : target === "database"
                   ? "QUERY"
                   : "HTTP",
-    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
+    markerEnd: { type: "arrowclosed" as MarkerType, width: 16, height: 16 },
   };
 }
 export type Board = {
@@ -321,9 +321,9 @@ export function parseBoard(text: string): Board {
     !object(value.config)
   )
     throw new Error("Choose a Liveboard JSON file with version 1.");
-  if (value.nodes.length > 19 || value.edges.length > 48)
+  if (value.nodes.length > 31 || value.edges.length > 80)
     throw new Error(
-      "Boards support four backend instances and one of each other component.",
+      "Boards support eight backends, consumers, and workers, plus one of each other component.",
     );
   const seen = new Set<string>();
   const nodes = value.nodes.map((n: unknown): Node => {
@@ -339,7 +339,7 @@ export function parseBoard(text: string): Board {
     if (
       !catalog.some((c) => c.role === role) ||
       !(["backend", "consumer", "worker"].includes(role)
-        ? new RegExp(`^${role}(?:-[2-4])?$`).test(n.id)
+        ? new RegExp(`^${role}(?:-[2-8])?$`).test(n.id)
         : n.id === role)
     )
       throw new Error("The board contains an unsupported component.");
@@ -454,7 +454,7 @@ export function parseBoard(text: string): Board {
       throw new Error("Invalid backend settings.");
     config.backendOverrides = {};
     for (const [id, settings] of Object.entries(raw.backendOverrides)) {
-      if (!/^backend(?:-[2-4])?$/.test(id) || !object(settings))
+      if (!/^backend(?:-[2-8])?$/.test(id) || !object(settings))
         throw new Error("Invalid backend instance.");
       const valid: Record<string, number | string | boolean> = {};
       for (const [key, v] of Object.entries(settings)) {

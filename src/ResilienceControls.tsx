@@ -139,7 +139,7 @@ export function ConnectionInspector({
   onConfig: Dispatch<SetStateAction<Config>>;
   onRemove: () => void;
 }) {
-  const supported = /^backend(?:-[2-4])?-database$/.test(id),
+  const supported = /^backend(?:-[2-8])?-database$/.test(id),
     settings = connectionSettings(config, id);
   const update = (patch: Partial<typeof settings>) =>
     onConfig((current) => ({

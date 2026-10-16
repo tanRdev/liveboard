@@ -63,6 +63,9 @@ import {
 } from "./board";
 import { icons } from "./visuals";
 import { technology } from "./settings";
+const ChallengePanel = lazy(() => import("./ChallengePanel"));
+import useChallengeSession from "./useChallengeSession";
+import { parseChallenge, parseSubmission } from "./challenges";
 const InterviewPanel = lazy(() => import("./InterviewPanel"));
 const LabPanel = lazy(() => import("./LabPanel"));
 import { briefs, defaultBrief, type InterviewBrief } from "./interview";
@@ -157,6 +160,15 @@ function App() {
   const worker = useRef<Worker | null>(null);
   const message = (type: string, extra = {}) =>
     worker.current?.postMessage({ type, ...extra });
+  const game = useChallengeSession({
+    send: message,
+    onLoad: (board) => loadBoard(board),
+    onFocus: () => setTab("Challenges"),
+  });
+  const challengeReceiver = useRef(game.receive);
+  useEffect(() => {
+    challengeReceiver.current = game.receive;
+  }, [game.receive]);
   useEffect(() => {
     const w = new Worker(new URL("./simulation.worker.ts", import.meta.url), {
       type: "module",
@@ -166,6 +178,10 @@ function App() {
       const data = e.data;
       if (data.type === "snapshot") {
         setState(data.state);
+        return;
+      }
+      if (data.type.startsWith("challenge")) {
+        challengeReceiver.current(data);
         return;
       }
       if (!pendingRun.current || data.id !== pendingRun.current.id) return;
@@ -236,6 +252,7 @@ function App() {
   const selectedEdge = edges.find((e) => e.id === selection);
   const fileInput = useRef<HTMLInputElement>(null);
   const [focused, setFocused] = useState(false);
+  const [workspaceExpanded, setWorkspaceExpanded] = useState(false);
   const boardDocument = (): Board => ({
     version: 1,
     nodes,
@@ -246,12 +263,20 @@ function App() {
   });
   const hasClient = nodes.some((n) => n.data.role === "client");
   const executionTab =
-    hasClient || tab === "Interview" ? tab : "Technology lab";
+    hasClient || ["Interview", "Challenges"].includes(tab)
+      ? tab
+      : "Technology lab";
   const busy =
     state.active ||
     state.kafka.active > 0 ||
     state.queueLab.inProgress.length > 0;
-  const prompt = boardPrompt(nodes, config);
+  const prompt =
+    game.active && game.view === "play"
+      ? [
+          game.active.title,
+          "Diagnose the incident. Meet the traffic objectives within the resource budget.",
+        ]
+      : boardPrompt(nodes, config);
   const result =
     state.results.find((r) => r.id === requestId) || state.results[0];
   const traceRequest =
@@ -304,11 +329,11 @@ function App() {
   const add = (role: Role) => {
     let id: string = role;
     if (["backend", "consumer", "worker"].includes(role)) {
-      const available = [role, `${role}-2`, `${role}-3`, `${role}-4`].find(
-        (id) => !nodes.some((n) => n.id === id),
-      );
+      const available = Array.from({ length: 8 }, (_, i) =>
+        i === 0 ? role : `${role}-${i + 1}`,
+      ).find((id) => !nodes.some((n) => n.id === id));
       if (!available) {
-        setToast(`This board already has four ${role} instances.`);
+        setToast(`This board already has eight ${role} instances.`);
         return;
       }
       id = available;
@@ -362,6 +387,7 @@ function App() {
     );
   };
   const resetBoard = (kind: Scenario) => {
+    game.leave();
     loadBoard(scenario(kind));
     const focus: Partial<Record<Scenario, string>> = {
       redis: "cache",
@@ -380,12 +406,30 @@ function App() {
   };
   const importBoard = async (file?: File) => {
     if (!file) return;
-    if (file.size > 1_000_000) {
-      setToast("Board files must be smaller than 1 MB.");
+    if (file.size > 3_000_000) {
+      setToast("Import files must be smaller than 3 MB.");
       return;
     }
     try {
-      const board = parseBoard(await file.text());
+      const text = await file.text();
+      const format = JSON.parse(text)?.format;
+      if (format === "liveboard-challenge-v1") {
+        game.open(parseChallenge(text));
+        setToast(
+          "Exercise loaded. Diagnose the starter, then verify your fix.",
+        );
+        return;
+      }
+      if (format === "liveboard-submission-v1") {
+        const submission = parseSubmission(text);
+        game.review(submission.challenge, submission.solution);
+        setToast(
+          "Submission loaded. Run verification against the original exercise.",
+        );
+        return;
+      }
+      const board = parseBoard(text);
+      game.leave();
       loadBoard(board);
       setToast("Board imported. Save to keep it on this device.");
     } catch (error) {
@@ -602,7 +646,7 @@ function App() {
               <span>More building blocks ahead</span>
             </div>
             <p>
-              Build with up to four backend instances.
+              Build with up to eight backend instances.
               <br />
               Route traffic. Compare. Break things.
             </p>
@@ -616,6 +660,14 @@ function App() {
               Explore hits, misses, and what happens when the database goes
               down.
             </p>
+            <button
+              onClick={() => {
+                setTab("Challenges");
+                game.setView("gallery");
+              }}
+            >
+              Incident challenges <ArrowUpRight size={15} />
+            </button>
             <button onClick={() => resetBoard("cache")}>
               Load cache-aside example <ArrowUpRight size={15} />
             </button>
@@ -645,7 +697,9 @@ function App() {
             ))}
           </div>
         </aside>
-        <main className="center">
+        <main
+          className={`center ${workspaceExpanded && ["Interview", "Challenges"].includes(executionTab) ? "workspace-expanded" : ""}`}
+        >
           <div className="canvas-top">
             <div className="canvas-tabs">
               <span className="active">
@@ -720,7 +774,7 @@ function App() {
               }}
               fitView
               fitViewOptions={{ padding: 0.16 }}
-              minZoom={0.35}
+              minZoom={0.15}
               maxZoom={1.5}
               defaultEdgeOptions={{ type: "traffic" }}
             >
@@ -768,7 +822,7 @@ function App() {
             </div>
           </div>
           <section
-            className={`execution ${executionTab === "Interview" ? "interview-expanded" : ["Traffic", "Technology lab"].includes(executionTab) ? "expanded" : ""}`}
+            className={`execution ${["Interview", "Challenges"].includes(executionTab) ? "interview-expanded" : ["Traffic", "Technology lab"].includes(executionTab) ? "expanded" : ""}`}
           >
             <div className="execution-heading">
               <div>
@@ -779,6 +833,19 @@ function App() {
                 </span>
               </div>
               <div className="playback">
+                {["Interview", "Challenges"].includes(executionTab) && (
+                  <button
+                    className="plain-button"
+                    aria-label={
+                      workspaceExpanded ? "Show board" : "Expand workspace"
+                    }
+                    onClick={() => setWorkspaceExpanded((value) => !value)}
+                  >
+                    <Expand size={13} />
+                    {workspaceExpanded ? "Show board" : "Expand"}
+                  </button>
+                )}
+
                 <span className="sim-clock">
                   <Clock3 size={12} />
                   {(state.now / 1000).toFixed(1)}s <small>simulated</small>
@@ -830,7 +897,7 @@ function App() {
                 </button>
               </div>
             </div>
-            {executionTab !== "Interview" &&
+            {!["Interview", "Challenges"].includes(executionTab) &&
               (hasClient ? (
                 <div className="request-bar">
                   <span className="method">
@@ -888,10 +955,12 @@ function App() {
                 "Traffic",
                 "Technology lab",
                 "Interview",
+                "Challenges",
               ]
                 .filter(
                   (t) =>
-                    hasClient || t === "Technology lab" || t === "Interview",
+                    hasClient ||
+                    ["Technology lab", "Interview", "Challenges"].includes(t),
                 )
                 .map((t) => (
                   <button
@@ -906,20 +975,48 @@ function App() {
                     )}
                   </button>
                 ))}
-              {hasClient && executionTab !== "Interview" && (
-                <span className="request-stats">
-                  {state.queue > 0 && <b>{state.queue} queued · </b>}
-                  {state.reads} database reads <span>·</span>{" "}
-                  {state.hits + state.misses
-                    ? Math.round(
-                        (state.hits / (state.hits + state.misses)) * 100,
-                      )
-                    : 0}
-                  % cache hit rate
-                </span>
-              )}
+              {hasClient &&
+                !["Interview", "Challenges"].includes(executionTab) && (
+                  <span className="request-stats">
+                    {state.queue > 0 && <b>{state.queue} queued · </b>}
+                    {state.reads} database reads <span>·</span>{" "}
+                    {state.hits + state.misses
+                      ? Math.round(
+                          (state.hits / (state.hits + state.misses)) * 100,
+                        )
+                      : 0}
+                    % cache hit rate
+                  </span>
+                )}
             </div>
             <div className="execution-body">
+              {executionTab === "Challenges" && (
+                <Suspense
+                  fallback={
+                    <p className="lab-empty">Loading incident challenges…</p>
+                  }
+                >
+                  <ChallengePanel
+                    board={boardDocument()}
+                    active={game.active}
+                    draft={game.draft}
+                    onDraft={game.setDraft}
+                    view={game.view}
+                    onView={game.setView}
+                    report={game.report}
+                    baseline={game.baseline}
+                    status={game.status}
+                    progress={game.progress}
+                    hints={game.hints}
+                    onHint={game.revealHint}
+                    attempts={game.attempts}
+                    onOpen={game.open}
+                    onVerify={game.verify}
+                    onCancel={game.cancel}
+                    onToast={setToast}
+                  />
+                </Suspense>
+              )}
               {executionTab === "Interview" && (
                 <Suspense
                   fallback={

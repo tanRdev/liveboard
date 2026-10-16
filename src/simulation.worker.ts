@@ -1,3 +1,5 @@
+import { ChallengeRunner, type ChallengeDefinition } from "./challenges";
+import type { Board } from "./board";
 import { ExperimentRunner, type ExperimentSpec } from "./experiments";
 import { Engine, type Config } from "./engine";
 let engine = new Engine();
@@ -35,6 +37,41 @@ function pumpExperiment() {
     experiment = undefined;
   }
 }
+let challenge: { id: string; runner: ChallengeRunner } | undefined;
+function pumpChallenge() {
+  const current = challenge;
+  if (!current) return;
+  try {
+    for (let i = 0; i < 30 && !current.runner.finished; i++)
+      current.runner.tick();
+    if (challenge !== current) return;
+    if (current.runner.finished) {
+      postMessage({
+        type: "challengeComplete",
+        id: current.id,
+        report: current.runner.report,
+      });
+      challenge = undefined;
+    } else {
+      postMessage({
+        type: "challengeProgress",
+        id: current.id,
+        progress: current.runner.progress(),
+      });
+      setTimeout(pumpChallenge, 0);
+    }
+  } catch (error) {
+    postMessage({
+      type: "challengeError",
+      id: current.id,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Challenge verification failed",
+    });
+    challenge = undefined;
+  }
+}
 function publish() {
   postMessage({ type: "snapshot", state: engine.state });
 }
@@ -42,6 +79,8 @@ onmessage = (
   event: MessageEvent<{
     type: string;
     spec?: ExperimentSpec;
+    definition?: ChallengeDefinition;
+    board?: Board;
     id?: string;
     config?: Config;
     path?: string;
@@ -55,6 +94,24 @@ onmessage = (
 ) => {
   const message = event.data;
   switch (message.type) {
+    case "challenge":
+      try {
+        challenge = {
+          id: message.id!,
+          runner: new ChallengeRunner(message.definition!, message.board!),
+        };
+        setTimeout(pumpChallenge, 0);
+      } catch (error) {
+        postMessage({
+          type: "challengeError",
+          id: message.id,
+          error: error instanceof Error ? error.message : "Invalid challenge",
+        });
+      }
+      return;
+    case "cancelChallenge":
+      challenge = undefined;
+      return;
     case "experiment":
       try {
         experiment = {

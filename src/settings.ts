@@ -136,10 +136,10 @@ export function parseSettings(raw: Record<string, unknown>, config: Config) {
     if (raw[key] === undefined) continue;
     if (!object(raw[key])) throw new Error(`Invalid ${key}.`);
     const entries = Object.entries(raw[key]);
-    if (entries.length > 4)
-      throw new Error(`At most four ${role} instances are supported.`);
+    if (entries.length > 8)
+      throw new Error(`At most eight ${role} instances are supported.`);
     for (const [id, settings] of entries) {
-      if (!new RegExp(`^${role}(?:-[2-4])?$`).test(id))
+      if (!new RegExp(`^${role}(?:-[2-8])?$`).test(id))
         throw new Error(`Invalid ${role} identity.`);
       const valid = validate(settings, role);
       if (key === "consumerOverrides")
@@ -152,14 +152,14 @@ export function parseSettings(raw: Record<string, unknown>, config: Config) {
     ["connectionOverrides", "connection"],
   ] as const) {
     if (raw[key] === undefined) continue;
-    if (!object(raw[key]) || Object.keys(raw[key]).length > 4)
+    if (!object(raw[key]) || Object.keys(raw[key]).length > 8)
       throw new Error(`Invalid ${key}.`);
     for (const [id, value] of Object.entries(raw[key])) {
       if (
         !(
           key === "resilienceOverrides"
-            ? /^backend(?:-[2-4])?$/
-            : /^backend(?:-[2-4])?-database$/
+            ? /^backend(?:-[2-8])?$/
+            : /^backend(?:-[2-8])?-database$/
         ).test(id)
       )
         throw new Error(`Invalid ${schema} identity.`);
