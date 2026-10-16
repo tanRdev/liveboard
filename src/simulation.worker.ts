@@ -12,12 +12,16 @@ onmessage = (
     path?: string;
     count?: number;
     value?: number;
+    running?: boolean;
   }>,
 ) => {
   const message = event.data;
   switch (message.type) {
     case "configure":
       engine.configure(message.config!);
+      break;
+    case "traffic":
+      engine.setTraffic(message.value!, message.path!, !!message.running);
       break;
     case "send":
       engine.send(message.path!, message.count);

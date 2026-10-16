@@ -4,6 +4,8 @@ export type Config = {
   capacity: number;
   eviction: "LRU" | "FIFO";
   timeout: number;
+  concurrency: number;
+  queueLimit: number;
   delay: number;
   online: boolean;
   route: string;
@@ -16,6 +18,8 @@ export const defaults: Config = {
   capacity: 5,
   eviction: "LRU",
   timeout: 2000,
+  concurrency: 1,
+  queueLimit: 50,
   delay: 600,
   online: true,
   route: "/users/:id",
@@ -42,6 +46,7 @@ export type Result = {
   status: number;
   body: unknown;
   duration: number;
+  wait: number;
   source: string;
 };
 type Job = {
@@ -51,6 +56,8 @@ type Job = {
   key: string;
   stage: number;
   deadline: number;
+  due: number;
+  startedAt: number;
   body?: unknown;
 };
 export type Snapshot = {
@@ -69,6 +76,17 @@ export type Snapshot = {
   misses: number;
   queue: number;
   active: boolean;
+  activeCount: number;
+  peakQueue: number;
+  metrics: {
+    sent: number;
+    completed: number;
+    failed: number;
+    rejected: number;
+    totalDuration: number;
+    totalWait: number;
+  };
+  traffic: { running: boolean; rate: number; path: string };
   edge?: string;
   reverse?: boolean;
 };
@@ -84,15 +102,30 @@ export class Engine {
     misses: 0,
     queue: 0,
     active: false,
+    activeCount: 0,
+    peakQueue: 0,
+    metrics: {
+      sent: 0,
+      completed: 0,
+      failed: 0,
+      rejected: 0,
+      totalDuration: 0,
+      totalWait: 0,
+    },
+    traffic: { running: false, rate: 5, path: "/users/1" },
   };
   jobs: Job[] = [];
   current?: Job;
-  due = 0;
+  running: Job[] = [];
+  nextArrival = Infinity;
   nextId = 1;
   eventId = 1;
   edgeUntil = 0;
   configure(config: Config) {
-    this.config = structuredClone(config);
+    this.config = { ...structuredClone(defaults), ...structuredClone(config) };
+    this.config.concurrency = this.limit(this.config.concurrency, 1, 16);
+    this.config.queueLimit = this.limit(this.config.queueLimit, 0, 500);
+    this.startNext();
   }
   emit(
     job: Job,
@@ -122,48 +155,80 @@ export class Engine {
       (e) => e.expires > this.state.now,
     );
   }
+  limit(value: number, min: number, max: number) {
+    return Math.min(
+      max,
+      Math.max(min, Number.isFinite(value) ? Math.floor(value) : min),
+    );
+  }
+  setTraffic(rate: number, path: string, running: boolean) {
+    this.state.traffic = { rate: this.limit(rate, 1, 20), path, running };
+    this.nextArrival = running ? this.state.now : Infinity;
+  }
   send(path: string, count = 1) {
-    for (let i = 0; i < Math.min(count, 100); i++) {
-      const job = {
+    for (let i = 0; i < this.limit(count, 1, 100); i++) {
+      const job: Job = {
         id: this.nextId++,
         path,
         key: `user:${path.split("/").pop()}`,
         start: this.state.now,
         stage: 0,
         deadline: 0,
+        due: 0,
+        startedAt: this.state.now,
       };
+      this.state.metrics.sent++;
+      if (
+        this.running.length >= this.config.concurrency &&
+        this.jobs.length >= this.config.queueLimit
+      ) {
+        this.record(job, 429, { error: "Backend queue is full" }, "overload");
+        this.state.metrics.rejected++;
+        continue;
+      }
       this.jobs.push(job);
       this.emit(job, "client", `GET ${path} queued`);
+      this.startNext();
+      this.state.peakQueue = Math.max(this.state.peakQueue, this.jobs.length);
     }
-    this.startNext();
     this.state.queue = this.jobs.length;
   }
   startNext() {
-    if (this.current || !this.jobs.length) return;
-    this.current = this.jobs.shift()!;
-    this.current.deadline = this.state.now + this.config.timeout;
-    this.state.active = true;
-    this.due = this.state.now + 160;
+    while (this.jobs.length && this.running.length < this.config.concurrency) {
+      const job = this.jobs.shift()!;
+      job.startedAt = this.state.now;
+      job.deadline = this.state.now + this.config.timeout;
+      job.due = this.state.now + 160;
+      this.running.push(job);
+      this.emit(
+        job,
+        "client",
+        `GET ${job.path} sent`,
+        "info",
+        "client-backend",
+      );
+    }
+    this.state.activeCount = this.running.length;
+    this.state.active = this.running.length > 0;
     this.state.queue = this.jobs.length;
-    this.emit(
-      this.current,
-      "client",
-      `GET ${this.current.path} sent`,
-      "info",
-      "client-backend",
-    );
   }
-  finish(status: number, body: unknown, source: string) {
-    const job = this.current!;
+  record(job: Job, status: number, body: unknown, source: string) {
+    const duration = this.state.now - job.start;
+    const wait = job.startedAt - job.start;
     this.state.results.unshift({
       id: job.id,
       path: job.path,
       status,
       body,
-      duration: this.state.now - job.start,
+      duration,
+      wait,
       source,
     });
     this.state.results = this.state.results.slice(0, 100);
+    this.state.metrics.completed++;
+    this.state.metrics.failed += Number(status >= 400);
+    this.state.metrics.totalDuration += duration;
+    this.state.metrics.totalWait += wait;
     this.emit(
       job,
       "client",
@@ -172,18 +237,37 @@ export class Engine {
       "client-backend",
       true,
     );
+  }
+  finish(status: number, body: unknown, source: string) {
+    const job = this.current!;
+    this.record(job, status, body, source);
+    this.running = this.running.filter((active) => active.id !== job.id);
     this.current = undefined;
-    this.state.active = false;
     this.startNext();
   }
-  step() {
-    if (!this.current) return;
-    this.state.now = Math.max(
-      this.state.now,
-      Math.min(this.due, this.current.deadline),
+  nextTime() {
+    return Math.min(
+      this.nextArrival,
+      ...this.running.map((job) => Math.min(job.due, job.deadline)),
     );
+  }
+  step() {
+    const next = this.nextTime();
+    if (!Number.isFinite(next)) return;
+    this.state.now = Math.max(this.state.now, next);
     this.expire();
-    const j = this.current;
+    const job = [...this.running].sort(
+      (a, b) =>
+        Math.min(a.due, a.deadline) - Math.min(b.due, b.deadline) ||
+        a.id - b.id,
+    )[0];
+    if (!job || this.nextArrival < Math.min(job.due, job.deadline)) {
+      this.send(this.state.traffic.path);
+      this.nextArrival += 1000 / this.state.traffic.rate;
+      return;
+    }
+    this.current = job;
+    const j = job;
     if (this.state.now >= j.deadline) {
       this.finish(504, { error: "Backend dependency timed out" }, "timeout");
       return;
@@ -213,17 +297,17 @@ export class Engine {
       }
       this.emit(j, "backend", `Route matched: GET ${this.config.route}`);
       j.stage = 1;
-      this.due = this.state.now + 120;
+      j.due = this.state.now + 120;
     } else if (j.stage === 1) {
       if (!this.config.roles.includes("cache") || !connected("backend-cache")) {
         this.emit(j, "backend", "Cache is disconnected. Read database.");
         j.stage = 3;
-        this.due = this.state.now + this.config.delay;
+        j.due = this.state.now + this.config.delay;
         return;
       }
       this.emit(j, "cache", `Lookup ${j.key}`, "info", "backend-cache");
       j.stage = 2;
-      this.due = this.state.now + 100;
+      j.due = this.state.now + 100;
     } else if (j.stage === 2) {
       const entry = this.state.entries.find((e) => e.key === j.key);
       if (entry) {
@@ -232,7 +316,7 @@ export class Engine {
         entry.used = this.state.now;
         this.emit(j, "cache", `HIT · ${j.key}`, "hit", "backend-cache", true);
         j.stage = 5;
-        this.due = this.state.now + 160;
+        j.due = this.state.now + 160;
       } else {
         this.state.misses++;
         this.emit(
@@ -244,7 +328,7 @@ export class Engine {
           true,
         );
         j.stage = 3;
-        this.due = this.state.now + this.config.delay;
+        j.due = this.state.now + this.config.delay;
       }
     } else if (j.stage === 3) {
       if (
@@ -271,7 +355,7 @@ export class Engine {
         "backend-database",
       );
       j.stage = 4;
-      this.due = this.state.now + 100;
+      j.due = this.state.now + 100;
     } else if (j.stage === 4) {
       const value = this.config.records[j.path.split("/").pop()!];
       if (!value) {
@@ -288,10 +372,13 @@ export class Engine {
         true,
       );
       j.stage = 7;
-      this.due = this.state.now + 120;
+      j.due = this.state.now + 120;
     } else if (j.stage === 7) {
       const value = j.body;
       if (this.config.roles.includes("cache") && connected("backend-cache")) {
+        this.state.entries = this.state.entries.filter(
+          (entry) => entry.key !== j.key,
+        );
         while (this.state.entries.length >= this.config.capacity) {
           const order = this.config.eviction === "LRU" ? "used" : "created";
           this.state.entries.sort((a, b) => a[order] - b[order]);
@@ -318,18 +405,17 @@ export class Engine {
         );
       }
       j.stage = 6;
-      this.due = this.state.now + 160;
+      j.due = this.state.now + 160;
     } else {
       this.finish(200, j.body, j.stage === 5 ? "cache" : "database");
     }
   }
   advance(ms: number) {
     const target = this.state.now + ms;
-    while (this.current && Math.min(this.due, this.current.deadline) <= target)
-      this.step();
+    while (this.nextTime() <= target) this.step();
     this.state.now = Math.max(target, this.state.now);
     this.expire();
-    if (!this.current && this.state.now >= this.edgeUntil) {
+    if (!this.running.length && this.state.now >= this.edgeUntil) {
       this.state.edge = undefined;
       this.state.reverse = false;
     }

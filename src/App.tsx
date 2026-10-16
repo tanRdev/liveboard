@@ -56,6 +56,7 @@ import {
 import { defaults, type Config, type Role, type Snapshot } from "./engine";
 import "@xyflow/react/dist/style.css";
 import "./styles.css";
+import TrafficPanel from "./TrafficPanel";
 const icons = { client: Globe, backend: Code2, cache: Zap, database: Database };
 const catalog: {
   role: Role;
@@ -131,6 +132,17 @@ const empty: Snapshot = {
   misses: 0,
   queue: 0,
   active: false,
+  activeCount: 0,
+  peakQueue: 0,
+  metrics: {
+    sent: 0,
+    completed: 0,
+    failed: 0,
+    rejected: 0,
+    totalDuration: 0,
+    totalWait: 0,
+  },
+  traffic: { running: false, rate: 5, path: "/users/1" },
 };
 type Board = {
   version: 1;
@@ -196,9 +208,7 @@ function ComponentNode({ id, data, selected }: NodeProps) {
             </div>
             <div className="node-detail">
               <span>Requests sent</span>
-              <strong>
-                {state.events.filter((e) => e.text.endsWith(" sent")).length}
-              </strong>
+              <strong>{state.metrics.sent}</strong>
             </div>
           </>
         )}
@@ -211,7 +221,27 @@ function ComponentNode({ id, data, selected }: NodeProps) {
               <span>
                 <span className="tiny-dot" /> Cache-aside
               </span>
-              <span>{state.queue ? `${state.queue} waiting` : "Ready"}</span>
+              <span>
+                {state.queue
+                  ? `${state.queue} waiting`
+                  : `${state.activeCount} / ${config.concurrency} active`}
+              </span>
+            </div>
+            <div
+              className="active-slots"
+              aria-label={`${state.activeCount} active requests, ${state.queue} waiting`}
+            >
+              {Array.from({ length: config.concurrency }, (_, i) => (
+                <i
+                  className={i < state.activeCount ? "occupied" : ""}
+                  key={i}
+                />
+              ))}
+              <span>
+                {state.metrics.rejected
+                  ? `${state.metrics.rejected} rejected`
+                  : `${config.concurrency} execution ${config.concurrency === 1 ? "slot" : "slots"}`}
+              </span>
             </div>
             {state.queue > 0 && (
               <div className="queue-bar">
@@ -329,7 +359,10 @@ function App() {
   const [edges, setEdges, onEdgesChange] = useEdgesState(
     saved?.edges || seedEdges,
   );
-  const [config, setConfig] = useState<Config>(saved?.config || defaults);
+  const [config, setConfig] = useState<Config>({
+    ...defaults,
+    ...saved?.config,
+  });
   const [title, setTitle] = useState(saved?.title || "User profile API");
   const [state, setState] = useState<Snapshot>(empty);
   const [selection, setSelection] = useState<Role>("cache");
@@ -364,6 +397,24 @@ function App() {
       },
     });
   }, [config, nodes, edges]);
+  useEffect(() => {
+    const canvas = document.querySelector(".canvas");
+    if (!canvas) return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          void flow.current?.fitView({ padding: 0.16 });
+        });
+      });
+    });
+    observer.observe(canvas);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, []);
   useEffect(() => {
     if (help) helpDialog.current?.showModal();
     else helpDialog.current?.close();
@@ -415,7 +466,14 @@ function App() {
     setSelection(role);
   };
   const resetBoard = (example: boolean) => {
-    setNodes(example ? seedNodes : []);
+    setNodes(
+      example
+        ? seedNodes.map((node) => ({
+            ...node,
+            measured: flow.current?.getInternalNode(node.id)?.measured,
+          }))
+        : [],
+    );
     setEdges(example ? seedEdges : []);
     setConfig(structuredClone(defaults));
     setRequestId(null);
@@ -825,14 +883,17 @@ function App() {
               </button>
             </div>
             <div className="execution-tabs">
-              {["Requests", "Event log", "Response"].map((t) => (
+              {["Requests", "Event log", "Response", "Traffic"].map((t) => (
                 <button
                   key={t}
                   className={tab === t ? "active" : ""}
                   onClick={() => setTab(t)}
                 >
                   {t}
-                  {t === "Requests" && <span>{state.results.length}</span>}
+                  {t === "Requests" && <span>{state.metrics.completed}</span>}
+                  {t === "Traffic" && state.traffic.running && (
+                    <span className="traffic-running-dot" />
+                  )}
                 </button>
               ))}
               <span className="request-stats">
@@ -845,6 +906,22 @@ function App() {
               </span>
             </div>
             <div className="execution-body">
+              {tab === "Traffic" && (
+                <TrafficPanel
+                  state={state}
+                  config={config}
+                  path={path}
+                  paused={!playing}
+                  onTraffic={(rate, requestPath, running) =>
+                    message("traffic", {
+                      value: rate,
+                      path: requestPath,
+                      running,
+                    })
+                  }
+                  onConfigure={() => setSelection("backend")}
+                />
+              )}
               {tab === "Requests" && (
                 <>
                   {!state.results.length ? (
@@ -891,7 +968,15 @@ function App() {
                             </span>
                             <span>{r.source}</span>
                             <span>
-                              {r.duration} ms <ChevronRight size={12} />
+                              <span
+                                title={`${r.wait} ms waiting in backend queue`}
+                              >
+                                {r.duration} ms
+                                {r.wait > 0 && (
+                                  <small> · {r.wait} queued</small>
+                                )}
+                              </span>{" "}
+                              <ChevronRight size={12} />
                             </span>
                           </button>
                         ))}
@@ -1142,6 +1227,54 @@ function App() {
                   />
                   <span>ms</span>
                 </div>
+                <label className="field-label" htmlFor="backend-concurrency">
+                  CONCURRENCY
+                </label>
+                <div className="unit-field">
+                  <input
+                    id="backend-concurrency"
+                    aria-label="Backend concurrency"
+                    type="number"
+                    min="1"
+                    max="16"
+                    value={config.concurrency}
+                    onChange={(e) =>
+                      update({
+                        concurrency: Math.min(
+                          16,
+                          Math.max(1, Math.floor(+e.target.value)),
+                        ),
+                      })
+                    }
+                  />
+                  <span>requests</span>
+                </div>
+                <label className="field-label" htmlFor="backend-queue-limit">
+                  QUEUE LIMIT
+                </label>
+                <div className="unit-field">
+                  <input
+                    id="backend-queue-limit"
+                    aria-label="Backend queue limit"
+                    type="number"
+                    min="0"
+                    max="500"
+                    value={config.queueLimit}
+                    onChange={(e) =>
+                      update({
+                        queueLimit: Math.min(
+                          500,
+                          Math.max(0, Math.floor(+e.target.value)),
+                        ),
+                      })
+                    }
+                  />
+                  <span>waiting</span>
+                </div>
+                <p className="field-help">
+                  Existing requests finish when concurrency decreases. Queue
+                  limits apply to new arrivals.
+                </p>
                 <div className="info-note">
                   <Zap size={15} />
                   <p>
@@ -1150,8 +1283,8 @@ function App() {
                   </p>
                 </div>
                 <p className="field-help">
-                  One active request. Additional requests wait in the visible
-                  queue.
+                  Up to {config.concurrency} requests run at once. A full queue
+                  returns 429 to new requests.
                 </p>
               </>
             )}
