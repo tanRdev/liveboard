@@ -339,8 +339,9 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
-/* Board-first workspace. Panels float over the canvas without resizing it. */
+/* Tools share one workspace. Open panels reserve board space. */
 .app-shell.board-shell {
+  --workspace-top: 72px;
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
@@ -367,7 +368,7 @@
 .board-identity,
 .board-shell .canvas-top,
 .board-runbar {
-  background: #fffffff5;
+  background: #fff;
   border: 1px solid #dfe7e1;
   border-radius: 11px;
   box-shadow: 0 3px 14px #223d2e10;
@@ -506,9 +507,22 @@
   z-index: 30;
   border: 1px solid #dfe7e1;
   border-radius: 12px;
-  background: #fffffff7;
+  background: #fff;
   box-shadow: 0 8px 30px #263f2e17;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.library-scroll {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+}
+.board-shell .library .search-box {
+  margin: 0;
+  flex-shrink: 0;
 }
 .board-shell .library .panel-heading {
   flex-shrink: 0;
@@ -566,12 +580,12 @@
 .board-shell .execution {
   position: absolute;
   bottom: 84px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(1080px, calc(100% - 28px));
+  left: 14px;
+  right: 14px;
+  width: auto;
   height: 320px;
   min-height: 180px;
-  max-height: calc(100dvh - 170px);
+  max-height: calc(100dvh - 340px);
   z-index: 25;
   border: 1px solid #dce6df;
   border-radius: 12px;
@@ -596,8 +610,8 @@
   background: #fff;
 }
 .board-shell .center.workspace-expanded .execution {
-  top: 72px;
-  bottom: 84px;
+  top: var(--workspace-top);
+  bottom: 14px;
   left: 14px;
   right: 14px;
   width: auto;
@@ -668,7 +682,7 @@
   white-space: nowrap;
 }
 .board-shell .react-flow__controls {
-  bottom: 84px;
+  bottom: 12px;
   left: 14px;
   margin: 0;
   border: 1px solid #dfe7e1;
@@ -677,7 +691,7 @@
   box-shadow: 0 3px 12px #263f2e12;
 }
 .board-shell .react-flow__minimap {
-  bottom: 84px;
+  bottom: 12px;
   right: 14px;
   margin: 0;
   border-radius: 9px;
@@ -905,4 +919,101 @@
   left: 50%;
   transform: translate(-50%, -50%);
   background: transparent;
+}
+
+/* Board tools never cover the usable React Flow viewport. */
+.board-shell .canvas > .board-viewport {
+  position: absolute;
+  top: var(--workspace-top);
+  bottom: 76px;
+  left: 14px;
+  right: 14px;
+  width: auto;
+  height: auto;
+}
+.board-shell:not(.library-hidden) .canvas > .board-viewport {
+  left: 308px;
+}
+.board-shell:not(.inspector-hidden) .canvas > .board-viewport {
+  right: 338px;
+}
+.board-shell.execution-open .canvas > .board-viewport {
+  bottom: calc(var(--execution-space) + 98px);
+}
+.board-shell .workspace-expanded .canvas {
+  visibility: hidden;
+}
+.board-shell .execution-tabs {
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+.board-shell .execution-tabs > button {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.board-shell .execution-heading,
+.board-shell .request-bar,
+.board-shell .message-bar {
+  flex-shrink: 0;
+}
+@media (max-width: 800px) {
+  .app-shell.board-shell {
+    --workspace-top: 114px;
+  }
+  .board-identity {
+    max-width: calc(100vw - 28px);
+  }
+  .board-shell .canvas-top {
+    top: 64px;
+    left: 14px;
+    right: auto;
+    max-width: calc(100vw - 28px);
+  }
+  .board-shell .library,
+  .inspector-surface {
+    top: var(--workspace-top);
+  }
+  .board-shell .execution-heading {
+    padding-inline: 10px;
+  }
+  .board-shell .execution-tabs {
+    gap: 15px;
+  }
+  .board-shell .request-stats {
+    display: none;
+  }
+}
+@media (max-width: 540px) {
+  .board-shell:not(.library-hidden) .canvas > .board-viewport,
+  .board-shell:not(.inspector-hidden) .canvas > .board-viewport {
+    visibility: hidden;
+  }
+  .board-shell .center.workspace-expanded .execution {
+    bottom: 10px;
+  }
+  .board-shell .execution {
+    right: 10px;
+    left: 10px;
+    width: auto;
+  }
+  .board-shell .playback .sim-clock {
+    display: none;
+  }
+}
+
+.board-shell .catalog-item strong {
+  font-size: 12px;
+}
+.board-shell .catalog-item small {
+  font-size: 10px;
+  color: #6b7b70;
+  white-space: normal;
+  line-height: 1.4;
+}
+.board-shell .execution-tabs > button {
+  font-size: 11px;
+  color: #607365;
+}
+.board-shell .execution-tabs > button.active {
+  color: #286847;
 }

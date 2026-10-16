@@ -1,6 +1,13 @@
 "use client";
 
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   ReactFlow,
   Background,
@@ -205,6 +212,31 @@ function App() {
     });
   }, [config, nodes, edges]);
   useEffect(() => {
+    const viewport = document.querySelector<HTMLElement>(".board-viewport");
+    if (!viewport) return;
+    let previous = viewport.getBoundingClientRect();
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      const next = viewport.getBoundingClientRect();
+      if (
+        Math.abs(next.width - previous.width) < 1 &&
+        Math.abs(next.height - previous.height) < 1
+      )
+        return;
+      previous = next;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (flow.current?.getNodes().length)
+          void flow.current.fitView({ padding: 0.16, duration: 120 });
+      });
+    });
+    observer.observe(viewport);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, []);
+  useEffect(() => {
     if (help) helpDialog.current?.showModal();
     else helpDialog.current?.close();
   }, [help]);
@@ -216,26 +248,25 @@ function App() {
   const selectedNode = nodes.find((n) => n.id === selection);
   const selectedEdge = edges.find((e) => e.id === selection);
   const fileInput = useRef<HTMLInputElement>(null);
-  const [focused, setFocused] = useState(false);
-  const [libraryVisible, setLibraryVisible] = useState(false);
-  const [inspectorVisible, setInspectorVisible] = useState(false);
+  const [panel, setPanel] = useState<
+    "components" | "inspector" | "execution" | null
+  >(null);
+  const libraryVisible = panel === "components";
+  const inspectorVisible = panel === "inspector";
+  const executionCollapsed = panel !== "execution";
   const [minimapVisible, setMinimapVisible] = useState(false);
-  const [executionCollapsed, setExecutionCollapsed] = useState(true);
   const [executionHeight, setExecutionHeight] = useState<number | undefined>();
+  const [workspaceExpanded, setWorkspaceExpanded] = useState(false);
   const selectExecutionTab = (next: string) => {
     setTab(next);
-    setExecutionCollapsed(false);
-    if (!["Interview", "Challenges"].includes(next))
-      setWorkspaceExpanded(false);
+    setPanel("execution");
+    setWorkspaceExpanded(["Interview", "Challenges"].includes(next));
   };
-  const [workspaceExpanded, setWorkspaceExpanded] = useState(false);
   useEffect(() => {
     function keyboard(event: KeyboardEvent) {
       if (document.querySelector("dialog[open], #board-menu")) return;
       if (event.key === "Escape") {
-        setLibraryVisible(false);
-        setInspectorVisible(false);
-        setExecutionCollapsed(true);
+        setPanel(null);
         setWorkspaceExpanded(false);
       }
       const target = event.target as HTMLElement;
@@ -247,8 +278,8 @@ function App() {
         !target.closest('input,textarea,select,[contenteditable="true"]')
       ) {
         event.preventDefault();
-        setLibraryVisible(true);
-        setFocused(false);
+        setPanel("components");
+
         requestAnimationFrame(() =>
           document
             .querySelector<HTMLInputElement>('[aria-label="Search components"]')
@@ -273,6 +304,7 @@ function App() {
     hasClient || ["Interview", "Challenges"].includes(tab)
       ? tab
       : "Technology lab";
+  const executionSize = `max(180px, min(${executionHeight ?? (["Traffic", "Technology lab"].includes(executionTab) ? 390 : 320)}px, calc(100dvh - 340px)))`;
   const busy =
     state.active ||
     state.kafka.active > 0 ||
@@ -339,7 +371,7 @@ function App() {
       id = available;
     } else if (nodes.some((n) => n.id === id)) {
       setSelection(id);
-      setInspectorVisible(true);
+      setPanel("inspector");
       return;
     }
     const node = createNode(role, id, position);
@@ -356,7 +388,6 @@ function App() {
     }
     setNodes((ns) => [...ns, node]);
     setSelection(id);
-    setInspectorVisible(true);
     if (role === "cache")
       setConfig((current) => ({
         ...current,
@@ -371,16 +402,12 @@ function App() {
       })),
     );
     setEdges(board.edges);
-    setExecutionCollapsed(true);
+    setPanel(null);
     setWorkspaceExpanded(false);
-    setInspectorVisible(false);
     setConfig(board.config);
     setPath(board.config.route.replace(/:id\b/g, "1"));
-    if (board.nodes.length >= 6 && window.innerWidth < 1600)
-      setLibraryVisible(false);
     if (!board.nodes.length) {
-      setLibraryVisible(true);
-      setFocused(false);
+      setPanel("components");
     }
     if (board.interview) setBrief(board.interview);
     setTitle(board.title);
@@ -510,7 +537,13 @@ function App() {
   });
   return (
     <div
-      className={`app-shell board-shell ${playing ? "" : "simulation-paused"} ${focused ? "focus-mode" : ""} ${!libraryVisible ? "library-hidden" : ""} ${!inspectorVisible ? "inspector-hidden" : ""}`}
+      style={
+        {
+          "--execution-space":
+            !executionCollapsed && !workspaceExpanded ? executionSize : "0px",
+        } as CSSProperties
+      }
+      className={`app-shell board-shell ${playing ? "" : "simulation-paused"} ${!libraryVisible ? "library-hidden" : ""} ${!inspectorVisible ? "inspector-hidden" : ""} ${!executionCollapsed && !workspaceExpanded ? "execution-open" : ""}`}
     >
       <BoardMenu
         title={title}
@@ -540,7 +573,7 @@ function App() {
             <button
               className="icon-button"
               aria-label="Close component library"
-              onClick={() => setLibraryVisible(false)}
+              onClick={() => setPanel(null)}
             >
               <X size={16} />
             </button>
@@ -555,115 +588,117 @@ function App() {
             />
             <kbd>/</kbd>
           </div>
-          {[
-            "APPLICATION",
-            "DATA & STORAGE",
-            "MESSAGING",
-            "TRAFFIC CONTROL",
-          ].map((category) => (
-            <section className="catalog-section" key={category}>
-              <h3>{category}</h3>
-              {catalog
-                .filter(
-                  (c) =>
-                    c.category === category &&
-                    `${c.name} ${c.description} ${c.tech}`
-                      .toLowerCase()
-                      .includes(search.toLowerCase()),
-                )
-                .map((c) => {
-                  const Icon = icons[c.role];
-                  return (
-                    <button
-                      className="catalog-item"
-                      key={c.role}
-                      onClick={() => add(c.role)}
-                      draggable
-                      onDragStart={(e) =>
-                        e.dataTransfer.setData("application/liveboard", c.role)
-                      }
-                    >
-                      <span className={`catalog-icon ${c.role}`}>
-                        <Icon size={19} strokeWidth={1.6} />
-                      </span>
-                      <span>
-                        <strong>{c.name}</strong>
-                        <small>{c.description}</small>
-                      </span>
-                      <Plus size={14} className="catalog-plus" />
-                    </button>
-                  );
-                })}
-            </section>
-          ))}
-          <details className="board-templates">
-            <summary>Templates</summary>
-            <button
-              onClick={() => {
-                selectExecutionTab("Challenges");
-                game.setView("gallery");
-              }}
-            >
-              Incident challenges <ArrowUpRight size={15} />
-            </button>
-            <button onClick={() => resetBoard("cache")}>
-              Cache-aside API <ArrowUpRight size={15} />
-            </button>
-            <button onClick={() => resetBoard("balanced")}>
-              Load-balanced API <ArrowUpRight size={15} />
-            </button>
-            <button
-              onClick={() => {
-                game.leave();
-                loadBoard(checkoutScenario());
-                setSelection("backend");
-                setPath("/checkout/1");
-                selectExecutionTab("Requests");
-              }}
-            >
-              Checkout system <ArrowUpRight size={15} />
-            </button>
-            {(
-              [
-                ["redis", "Redis cache"],
-                ["kafka", "Kafka stream"],
-                ["queue", "Message queue"],
-                ["database", "Primary and replica"],
-                ["gateway", "API gateway"],
-                ["resilience", "Dependency resilience"],
-              ] as const
-            ).map(([kind, label]) => (
+          <div className="library-scroll">
+            {[
+              "APPLICATION",
+              "DATA & STORAGE",
+              "MESSAGING",
+              "TRAFFIC CONTROL",
+            ].map((category) => (
+              <section className="catalog-section" key={category}>
+                <h3>{category}</h3>
+                {catalog
+                  .filter(
+                    (c) =>
+                      c.category === category &&
+                      `${c.name} ${c.description} ${c.tech}`
+                        .toLowerCase()
+                        .includes(search.toLowerCase()),
+                  )
+                  .map((c) => {
+                    const Icon = icons[c.role];
+                    return (
+                      <button
+                        className="catalog-item"
+                        key={c.role}
+                        onClick={() => add(c.role)}
+                        draggable
+                        onDragStart={(e) =>
+                          e.dataTransfer.setData(
+                            "application/liveboard",
+                            c.role,
+                          )
+                        }
+                      >
+                        <span className={`catalog-icon ${c.role}`}>
+                          <Icon size={19} strokeWidth={1.6} />
+                        </span>
+                        <span>
+                          <strong>{c.name}</strong>
+                          <small>{c.description}</small>
+                        </span>
+                        <Plus size={14} className="catalog-plus" />
+                      </button>
+                    );
+                  })}
+              </section>
+            ))}
+            <details className="board-templates">
+              <summary>Templates</summary>
               <button
-                key={kind}
                 onClick={() => {
-                  resetBoard(kind);
-                  selectExecutionTab(
-                    kind === "resilience" ? "Requests" : "Technology lab",
-                  );
+                  selectExecutionTab("Challenges");
+                  game.setView("gallery");
                 }}
               >
-                {label}
-                <ArrowUpRight size={15} />
+                Incident challenges <ArrowUpRight size={15} />
               </button>
-            ))}
-          </details>
+              <button onClick={() => resetBoard("cache")}>
+                Cache-aside API <ArrowUpRight size={15} />
+              </button>
+              <button onClick={() => resetBoard("balanced")}>
+                Load-balanced API <ArrowUpRight size={15} />
+              </button>
+              <button
+                onClick={() => {
+                  game.leave();
+                  loadBoard(checkoutScenario());
+                  setSelection("backend");
+                  setPath("/checkout/1");
+                  selectExecutionTab("Requests");
+                }}
+              >
+                Checkout system <ArrowUpRight size={15} />
+              </button>
+              {(
+                [
+                  ["redis", "Redis cache"],
+                  ["kafka", "Kafka stream"],
+                  ["queue", "Message queue"],
+                  ["database", "Primary and replica"],
+                  ["gateway", "API gateway"],
+                  ["resilience", "Dependency resilience"],
+                ] as const
+              ).map(([kind, label]) => (
+                <button
+                  key={kind}
+                  onClick={() => {
+                    resetBoard(kind);
+                    selectExecutionTab(
+                      kind === "resilience" ? "Requests" : "Technology lab",
+                    );
+                  }}
+                >
+                  {label}
+                  <ArrowUpRight size={15} />
+                </button>
+              ))}
+            </details>
+          </div>
         </aside>
         <main
-          className={`center ${workspaceExpanded && ["Interview", "Challenges"].includes(executionTab) ? "workspace-expanded" : ""}`}
+          className={`center ${!executionCollapsed && workspaceExpanded && ["Interview", "Challenges"].includes(executionTab) ? "workspace-expanded" : ""}`}
         >
           <nav className="canvas-top" aria-label="Board tools">
             <div className="canvas-layout-controls">
               <button
-                className={`board-tool ${libraryVisible && !focused ? "selected" : ""}`}
+                className={`board-tool ${libraryVisible ? "selected" : ""}`}
                 aria-label={
-                  libraryVisible && !focused
-                    ? "Hide component library"
-                    : "Add components"
+                  libraryVisible ? "Hide component library" : "Add components"
                 }
-                aria-expanded={libraryVisible && !focused}
+                aria-expanded={libraryVisible}
                 onClick={() => {
-                  setLibraryVisible(focused || !libraryVisible);
-                  setFocused(false);
+                  setPanel(libraryVisible ? null : "components");
                 }}
                 title="Add components"
               >
@@ -671,16 +706,13 @@ function App() {
                 <span>Add</span>
               </button>
               <button
-                className={`board-tool ${inspectorVisible && !focused ? "selected" : ""}`}
+                className={`board-tool ${inspectorVisible ? "selected" : ""}`}
                 aria-label={
-                  inspectorVisible && !focused
-                    ? "Hide inspector"
-                    : "Show inspector"
+                  inspectorVisible ? "Hide inspector" : "Show inspector"
                 }
-                aria-expanded={inspectorVisible && !focused}
+                aria-expanded={inspectorVisible}
                 onClick={() => {
-                  setInspectorVisible(focused || !inspectorVisible);
-                  setFocused(false);
+                  setPanel(inspectorVisible ? null : "inspector");
                 }}
                 title="Inspector"
               >
@@ -688,16 +720,27 @@ function App() {
                 <span>Inspect</span>
               </button>
               <button
-                className={`board-tool ${!executionCollapsed ? "selected" : ""}`}
+                className={`board-tool ${!executionCollapsed && !["Interview", "Challenges"].includes(tab) ? "selected" : ""}`}
                 aria-label={
-                  executionCollapsed
+                  executionCollapsed ||
+                  ["Interview", "Challenges"].includes(tab)
                     ? "Show execution panel"
                     : "Hide execution panel"
                 }
-                aria-expanded={!executionCollapsed}
+                aria-expanded={
+                  !executionCollapsed &&
+                  !["Interview", "Challenges"].includes(tab)
+                }
                 onClick={() => {
-                  setExecutionCollapsed((value) => !value);
-                  setWorkspaceExpanded(false);
+                  if (
+                    !executionCollapsed &&
+                    !["Interview", "Challenges"].includes(tab)
+                  )
+                    setPanel(null);
+                  else
+                    selectExecutionTab(
+                      hasClient ? "Requests" : "Technology lab",
+                    );
                 }}
                 title="Requests, traces, and traffic"
               >
@@ -708,7 +751,11 @@ function App() {
               <span className="tool-divider" />
               <button
                 className={`board-tool ${!executionCollapsed && tab === "Challenges" ? "selected" : ""}`}
-                onClick={() => selectExecutionTab("Challenges")}
+                onClick={() =>
+                  !executionCollapsed && tab === "Challenges"
+                    ? setPanel(null)
+                    : selectExecutionTab("Challenges")
+                }
                 title="Incident challenges"
               >
                 <Trophy size={16} />
@@ -716,7 +763,11 @@ function App() {
               </button>
               <button
                 className={`board-tool ${!executionCollapsed && tab === "Interview" ? "selected" : ""}`}
-                onClick={() => selectExecutionTab("Interview")}
+                onClick={() =>
+                  !executionCollapsed && tab === "Interview"
+                    ? setPanel(null)
+                    : selectExecutionTab("Interview")
+                }
                 title="Interview workspace"
               >
                 <ClipboardList size={16} />
@@ -745,9 +796,7 @@ function App() {
                 aria-label="Hide all panels"
                 title="Hide all panels"
                 onClick={() => {
-                  setLibraryVisible(false);
-                  setInspectorVisible(false);
-                  setExecutionCollapsed(true);
+                  setPanel(null);
                   setWorkspaceExpanded(false);
                   setMinimapVisible(false);
                 }}
@@ -774,65 +823,65 @@ function App() {
                 );
             }}
           >
-            <ReactFlow
-              nodes={renderedNodes}
-              edges={renderedEdges}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              nodeTypes={nodeTypes}
-              edgeTypes={edgeTypes}
-              onInit={(instance) => {
-                flow.current = instance;
-              }}
-              fitView={Boolean(saved?.nodes.length)}
-              onNodeClick={(_, node) => {
-                setSelection(node.id);
-                setInspectorVisible(true);
-                setFocused(false);
-              }}
-              onEdgeClick={(_, edge) => {
-                setSelection(edge.id);
-                setInspectorVisible(true);
-                setFocused(false);
-              }}
-              onConnect={(connection) => {
-                const source = nodes.find((n) => n.id === connection.source);
-                const target = nodes.find((n) => n.id === connection.target);
-                if (source && target && canConnect(source, target))
-                  setEdges((edges) =>
-                    addEdge(createEdge(source.id, target.id), edges),
-                  );
-                else setToast("These component ports cannot connect.");
-              }}
-              minZoom={0.15}
-              maxZoom={1.5}
-              defaultEdgeOptions={{ type: "traffic" }}
-            >
-              <Background color="#d8ded9" gap={20} size={1} />
-              <Controls showInteractive={false} />
-              {minimapVisible && (
-                <MiniMap
-                  nodeColor={(n) =>
-                    ({
-                      client: "#b3c2de",
-                      backend: "#bdb5d6",
-                      cache: "#98c9af",
-                      database: "#dfc794",
-                      balancer: "#a8c6d4",
-                    })[String(n.data.role)] || "#ccc"
-                  }
-                  maskColor="rgba(248,249,247,.7)"
-                />
-              )}
-            </ReactFlow>
-            {!nodes.length && (
+            <div className="board-viewport">
+              <ReactFlow
+                nodes={renderedNodes}
+                edges={renderedEdges}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                nodeTypes={nodeTypes}
+                edgeTypes={edgeTypes}
+                onInit={(instance) => {
+                  flow.current = instance;
+                }}
+                fitView={Boolean(saved?.nodes.length)}
+                onNodeClick={(_, node) => {
+                  setSelection(node.id);
+                  setPanel("inspector");
+                }}
+                onEdgeClick={(_, edge) => {
+                  setSelection(edge.id);
+                  setPanel("inspector");
+                }}
+                onConnect={(connection) => {
+                  const source = nodes.find((n) => n.id === connection.source);
+                  const target = nodes.find((n) => n.id === connection.target);
+                  if (source && target && canConnect(source, target))
+                    setEdges((edges) =>
+                      addEdge(createEdge(source.id, target.id), edges),
+                    );
+                  else setToast("These component ports cannot connect.");
+                }}
+                minZoom={0.15}
+                maxZoom={1.5}
+                defaultEdgeOptions={{ type: "traffic" }}
+              >
+                <Background color="#d8ded9" gap={20} size={1} />
+                <Controls showInteractive={false} />
+                {minimapVisible && (
+                  <MiniMap
+                    nodeColor={(n) =>
+                      ({
+                        client: "#b3c2de",
+                        backend: "#bdb5d6",
+                        cache: "#98c9af",
+                        database: "#dfc794",
+                        balancer: "#a8c6d4",
+                      })[String(n.data.role)] || "#ccc"
+                    }
+                    maskColor="rgba(248,249,247,.7)"
+                  />
+                )}
+              </ReactFlow>
+            </div>
+            {!nodes.length && !panel && (
               <div className="empty-board">
                 <Layers size={32} />
                 <h2>Untitled system</h2>
                 <p>Add components and connect their ports.</p>
                 <button
                   className="save-button"
-                  onClick={() => setLibraryVisible(true)}
+                  onClick={() => setPanel("components")}
                 >
                   <Plus size={14} /> Add components <kbd>/</kbd>
                 </button>
@@ -849,28 +898,16 @@ function App() {
             </div>
           </div>
           <section
-            style={
-              executionCollapsed
-                ? { height: 48, minHeight: 48, maxHeight: 48 }
-                : executionHeight && !workspaceExpanded
-                  ? {
-                      height: executionHeight,
-                      minHeight: 180,
-                      maxHeight: "calc(100% - 283px)",
-                    }
-                  : undefined
-            }
+            style={!workspaceExpanded ? { height: executionSize } : undefined}
             className={`execution ${executionCollapsed ? "execution-collapsed" : ""} ${["Interview", "Challenges"].includes(executionTab) ? "interview-expanded" : ["Traffic", "Technology lab"].includes(executionTab) ? "expanded" : ""}`}
           >
             {!executionCollapsed && !workspaceExpanded && (
               <ExecutionResizeHandle
                 height={
                   executionHeight ??
-                  (["Interview", "Challenges"].includes(executionTab)
-                    ? 330
-                    : ["Traffic", "Technology lab"].includes(executionTab)
-                      ? 290
-                      : 230)
+                  (["Traffic", "Technology lab"].includes(executionTab)
+                    ? 390
+                    : 320)
                 }
                 onResize={setExecutionHeight}
               />
@@ -887,7 +924,7 @@ function App() {
                   }
                   aria-expanded={!executionCollapsed}
                   onClick={() => {
-                    setExecutionCollapsed(!executionCollapsed);
+                    setPanel(executionCollapsed ? "execution" : null);
                     if (!executionCollapsed) setWorkspaceExpanded(false);
                   }}
                 >
@@ -896,7 +933,11 @@ function App() {
                   ) : (
                     <ChevronDown size={15} />
                   )}
-                  <h2>Execution</h2>
+                  <h2>
+                    {["Interview", "Challenges"].includes(executionTab)
+                      ? executionTab
+                      : "Execution"}
+                  </h2>
                 </button>
                 <span className="execution-status">
                   {busy ? "Running" : "Idle"}
@@ -965,45 +1006,19 @@ function App() {
                 >
                   <RotateCcw size={14} />
                 </button>
+                <button
+                  className="icon-button"
+                  aria-label="Close workspace panel"
+                  title="Close panel"
+                  onClick={() => setPanel(null)}
+                >
+                  <X size={16} />
+                </button>
               </div>
             </div>
             {!["Interview", "Challenges"].includes(executionTab) &&
-              (hasClient ? (
-                <div className="request-bar">
-                  <span className="method">
-                    GET <ChevronDown size={11} />
-                  </span>
-                  <input
-                    aria-label="Request path"
-                    value={path}
-                    onChange={(e) => setPath(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        message("send", { path, count: traffic });
-                        setRequestId(null);
-                      }
-                    }}
-                  />
-                  <select
-                    aria-label="Traffic volume"
-                    value={traffic}
-                    onChange={(e) => setTraffic(+e.target.value)}
-                  >
-                    <option value="1">Single request</option>
-                    <option value="10">Burst · 10 requests</option>
-                    <option value="50">Burst · 50 requests</option>
-                  </select>
-                  <button
-                    className="send-button"
-                    onClick={() => {
-                      message("send", { path, count: traffic });
-                      setRequestId(null);
-                    }}
-                  >
-                    <Play size={13} fill="currentColor" /> Send request
-                  </button>
-                </div>
-              ) : nodes.some((node) => node.data.role === "producer") ? (
+              !hasClient &&
+              nodes.some((node) => node.data.role === "producer") && (
                 <div className="message-bar">
                   <span>Send an event to connected streams and queues</span>
                   <button onClick={() => message("produce", { count: 1 })}>
@@ -1012,53 +1027,60 @@ function App() {
                   <button onClick={() => message("produce", { count: 10 })}>
                     Produce 10
                   </button>
-                  <button onClick={() => setSelection("producer")}>
+                  <button
+                    onClick={() => {
+                      setSelection("producer");
+                      setPanel("inspector");
+                    }}
+                  >
                     Producer settings
                   </button>
                 </div>
-              ) : null)}
-            <div className="execution-tabs">
-              {[
-                "Requests",
-                "Event log",
-                "Response",
-                "Traffic",
-                "Technology lab",
-                "Interview",
-                "Challenges",
-              ]
-                .filter(
-                  (t) =>
-                    hasClient ||
-                    ["Technology lab", "Interview", "Challenges"].includes(t),
-                )
-                .map((t) => (
-                  <button
-                    key={t}
-                    className={executionTab === t ? "active" : ""}
-                    onClick={() => selectExecutionTab(t)}
-                  >
-                    {t === "Technology lab" ? "System state" : t}
-                    {t === "Requests" && <span>{state.metrics.completed}</span>}
-                    {t === "Traffic" && state.traffic.running && (
-                      <span className="traffic-running-dot" />
-                    )}
-                  </button>
-                ))}
-              {hasClient &&
-                !["Interview", "Challenges"].includes(executionTab) && (
-                  <span className="request-stats">
-                    {state.queue > 0 && <b>{state.queue} queued · </b>}
-                    {state.reads} database reads <span>·</span>{" "}
-                    {state.hits + state.misses
-                      ? Math.round(
-                          (state.hits / (state.hits + state.misses)) * 100,
-                        )
-                      : 0}
-                    % cache hit rate
-                  </span>
-                )}
-            </div>
+              )}
+            {!["Interview", "Challenges"].includes(executionTab) && (
+              <div className="execution-tabs">
+                {[
+                  "Requests",
+                  "Event log",
+                  "Response",
+                  "Traffic",
+                  "Technology lab",
+                ]
+                  .filter(
+                    (t) =>
+                      hasClient ||
+                      ["Technology lab", "Interview", "Challenges"].includes(t),
+                  )
+                  .map((t) => (
+                    <button
+                      key={t}
+                      className={executionTab === t ? "active" : ""}
+                      onClick={() => selectExecutionTab(t)}
+                    >
+                      {t === "Technology lab" ? "System state" : t}
+                      {t === "Requests" && (
+                        <span>{state.metrics.completed}</span>
+                      )}
+                      {t === "Traffic" && state.traffic.running && (
+                        <span className="traffic-running-dot" />
+                      )}
+                    </button>
+                  ))}
+                {hasClient &&
+                  !["Interview", "Challenges"].includes(executionTab) && (
+                    <span className="request-stats">
+                      {state.queue > 0 && <b>{state.queue} queued · </b>}
+                      {state.reads} database reads <span>·</span>{" "}
+                      {state.hits + state.misses
+                        ? Math.round(
+                            (state.hits / (state.hits + state.misses)) * 100,
+                          )
+                        : 0}
+                      % cache hit rate
+                    </span>
+                  )}
+              </div>
+            )}
             <div className="execution-body">
               {executionTab === "Challenges" && (
                 <Suspense
@@ -1129,7 +1151,10 @@ function App() {
                     state={state}
                     nodes={nodes}
                     onMessage={message}
-                    onSelect={setSelection}
+                    onSelect={(id) => {
+                      setSelection(id);
+                      setPanel("inspector");
+                    }}
                   />
                 </Suspense>
               )}
@@ -1177,10 +1202,8 @@ function App() {
                         <Send size={21} />
                       </span>
                       <div>
-                        <strong>A request is worth a thousand diagrams.</strong>
-                        <p>
-                          Send your first request to see your system in motion.
-                        </p>
+                        <strong>No requests yet.</strong>
+                        <p>Send a request to inspect its response and trace.</p>
                       </div>
                       <ArrowUpRight size={18} />
                     </div>
@@ -1290,7 +1313,7 @@ function App() {
           <button
             className="icon-button panel-dismiss"
             aria-label="Close inspector"
-            onClick={() => setInspectorVisible(false)}
+            onClick={() => setPanel(null)}
           >
             <X size={16} />
           </button>
@@ -1366,7 +1389,7 @@ function App() {
           )}
         </div>
       </div>
-      {nodes.length > 0 && (
+      {nodes.length > 0 && !(panel === "execution" && workspaceExpanded) && (
         <div className="board-runbar" aria-label="Quick simulation controls">
           <button
             className="icon-button"
@@ -1439,7 +1462,7 @@ function App() {
           ) : (
             <button
               className="send-button"
-              onClick={() => setLibraryVisible(true)}
+              onClick={() => setPanel("components")}
             >
               <Plus size={14} />
               Add components
