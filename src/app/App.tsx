@@ -1,3 +1,5 @@
+"use client";
+
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   ReactFlow,
@@ -47,8 +49,6 @@ import {
   type Role,
   type Snapshot,
 } from "../simulation/engine";
-import "@xyflow/react/dist/style.css";
-import "./styles.css";
 import TrafficPanel from "../labs/TrafficPanel";
 import { AutoFit, ComponentNode, TrafficEdge } from "../board/BoardNodes";
 import {

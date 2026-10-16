@@ -2143,3 +2143,13 @@ a {
     height: 320px;
   }
 }
+
+.workspace-loading {
+  display: grid;
+  place-items: center;
+  width: 100vw;
+  height: 100dvh;
+  color: #56725e;
+  font-size: 14px;
+  background: #f7f9f5;
+}

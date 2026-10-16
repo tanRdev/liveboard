@@ -17,3 +17,10 @@ plans/
 .claude/
 .agents/
 .openai/
+
+# Next.js build output
+.next/
+out/
+.vercel/
+next-env.d.ts
+liveboard-next-build.tar.gz

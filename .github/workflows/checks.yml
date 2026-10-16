@@ -27,9 +27,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: tar -czf liveboard-next-build.tar.gz -C .next/standalone .
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: liveboard-static-build
-          path: dist/
+          name: liveboard-next-build
+          path: liveboard-next-build.tar.gz
           if-no-files-found: error
           retention-days: 14
