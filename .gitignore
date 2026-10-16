@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+*.local
+*.local.*
+
+# Local notes and agent context
+*.md
+!README.md
+docs/
+context/
+plans/
+.codex/
+.claude/
+.agents/
+.openai/
