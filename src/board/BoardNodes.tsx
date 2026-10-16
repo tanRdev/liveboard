@@ -6,8 +6,6 @@ import {
   EdgeLabelRenderer,
   getSmoothStepPath,
   useUpdateNodeInternals,
-  useNodesInitialized,
-  useReactFlow,
   type NodeProps,
   type EdgeProps,
 } from "@xyflow/react";
@@ -206,7 +204,7 @@ export function ComponentNode({ id, data, selected }: NodeProps) {
               <span>Published</span>
               <strong>{state.kafka.produced + state.queueLab.published}</strong>
             </div>
-            <div className="node-footer">Send a payload in Technology lab</div>
+            <div className="node-footer">Send a payload in System state</div>
           </>
         )}
         {role === "stream" && (
@@ -457,17 +455,4 @@ function TrafficPackets({
       </g>
     );
   });
-}
-
-export function AutoFit({ structureKey }: { structureKey: string }) {
-  const ready = useNodesInitialized();
-  const { fitView } = useReactFlow();
-  useEffect(() => {
-    if (!ready) return;
-    const frame = requestAnimationFrame(() => {
-      void fitView({ padding: 0.16 });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [ready, structureKey, fitView]);
-  return null;
 }

@@ -16,7 +16,6 @@ import {
 import {
   ArrowRight,
   ArrowUpRight,
-  Box,
   Check,
   ChevronDown,
   ChevronUp,
@@ -40,7 +39,6 @@ import {
   Send,
   SkipForward,
   X,
-  Zap,
 } from "lucide-react";
 import {
   defaults,
@@ -50,7 +48,7 @@ import {
   type Snapshot,
 } from "../simulation/engine";
 import TrafficPanel from "../labs/TrafficPanel";
-import { AutoFit, ComponentNode, TrafficEdge } from "../board/BoardNodes";
+import { ComponentNode, TrafficEdge } from "../board/BoardNodes";
 import {
   catalog,
   createNode,
@@ -91,66 +89,22 @@ const InterviewPanel = lazy(() => import("../interview/InterviewPanel"));
 const LabPanel = lazy(() => import("../labs/LabPanel"));
 const edgeTypes = { traffic: TrafficEdge };
 const nodeTypes = { component: ComponentNode };
-function boardPrompt(nodes: Node[], config: Config): [string, string] {
-  if (
-    nodes.some(
-      (node) =>
-        node.data.role === "backend" &&
-        config.serviceOverrides[node.id]?.mode === "handler",
-    )
-  )
-    return [
-      "SERVICE DEPENDENCIES",
-      "Which service limits capacity, and when should fulfillment begin?",
-    ];
-  if (Object.keys(config.connectionOverrides).length)
-    return [
-      "DEPENDENCY RESILIENCE",
-      "Can retries recover a failure without exhausting the request budget?",
-    ];
-  if (nodes.some((n) => n.data.role === "stream"))
-    return [
-      "KAFKA EVENT STREAM",
-      "What happens when a consumer stops before committing?",
-    ];
-  if (nodes.some((n) => n.data.role === "queue"))
-    return [
-      "MESSAGE DELIVERY",
-      "What happens when a worker fails before acknowledgment?",
-    ];
-  if (nodes.some((n) => n.data.role === "balancer"))
-    return config.gateway.technology === "api-gateway"
-      ? ["API GATEWAY", "How much traffic can the token bucket admit?"]
-      : ["LOAD BALANCING", "What happens when one backend goes offline?"];
-  if (
-    nodes.some((n) => n.data.role === "database") &&
-    !nodes.some((n) => n.data.role === "cache")
-  )
-    return [
-      "DATABASE CONSISTENCY",
-      "When does a replica show a committed write?",
-    ];
-  return [
-    "CACHE-ASIDE PATTERN",
-    "What happens when the same request arrives twice?",
-  ];
-}
 function App() {
   const [saved] = useState(() => {
     try {
       const text = localStorage.getItem("liveboard-v1");
       return text ? parseBoard(text) : undefined;
     } catch {
-      // A damaged local document starts with the example board.
+      // A damaged local document starts with an empty board.
       return undefined;
     }
   });
-  const [example] = useState(() => scenario("cache"));
+  const [empty] = useState(() => scenario("empty"));
   const [nodes, setNodes, onNodesChange] = useNodesState(
-    saved?.nodes || example.nodes,
+    saved?.nodes ?? empty.nodes,
   );
   const [edges, setEdges, onEdgesChange] = useEdgesState(
-    saved?.edges || example.edges,
+    saved?.edges ?? empty.edges,
   );
   const [config, setConfig] = useState<Config>({
     ...defaults,
@@ -169,9 +123,9 @@ function App() {
   const pendingRun = useRef<{ id: string; board: Board } | undefined>(
     undefined,
   );
-  const [title, setTitle] = useState(saved?.title || "User profile API");
+  const [title, setTitle] = useState(saved?.title ?? empty.title);
   const [state, setState] = useState<Snapshot>(initialSnapshot);
-  const [selection, setSelection] = useState("cache");
+  const [selection, setSelection] = useState("");
   const [search, setSearch] = useState("");
   const [path, setPath] = useState("/users/1");
   const [playing, setPlaying] = useState(true);
@@ -251,24 +205,6 @@ function App() {
     });
   }, [config, nodes, edges]);
   useEffect(() => {
-    const canvas = document.querySelector(".canvas");
-    if (!canvas) return;
-    let frame = 0;
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        frame = requestAnimationFrame(() => {
-          void flow.current?.fitView({ padding: 0.16 });
-        });
-      });
-    });
-    observer.observe(canvas);
-    return () => {
-      observer.disconnect();
-      cancelAnimationFrame(frame);
-    };
-  }, []);
-  useEffect(() => {
     if (help) helpDialog.current?.showModal();
     else helpDialog.current?.close();
   }, [help]);
@@ -341,13 +277,6 @@ function App() {
     state.active ||
     state.kafka.active > 0 ||
     state.queueLab.inProgress.length > 0;
-  const prompt =
-    game.active && game.view === "play"
-      ? [
-          game.active.title,
-          "Diagnose the incident. Meet the traffic objectives within the resource budget.",
-        ]
-      : boardPrompt(nodes, config);
   const result =
     state.results.find((r) => r.id === requestId) || state.results[0];
   const traceRequest =
@@ -397,7 +326,7 @@ function App() {
       );
     }
   };
-  const add = (role: Role) => {
+  const add = (role: Role, position?: { x: number; y: number }) => {
     let id: string = role;
     if (["backend", "consumer", "worker"].includes(role)) {
       const available = Array.from({ length: 8 }, (_, i) =>
@@ -413,8 +342,12 @@ function App() {
       setInspectorVisible(true);
       return;
     }
-    const node = createNode(role, id);
-    if (["backend", "consumer", "worker"].includes(role) && id !== role) {
+    const node = createNode(role, id, position);
+    if (
+      !position &&
+      ["backend", "consumer", "worker"].includes(role) &&
+      id !== role
+    ) {
       const existing = nodes.filter((node) => node.data.role === role);
       node.position = {
         x: existing[0]?.position.x ?? node.position.x,
@@ -423,16 +356,12 @@ function App() {
     }
     setNodes((ns) => [...ns, node]);
     setSelection(id);
+    setInspectorVisible(true);
     if (role === "cache")
       setConfig((current) => ({
         ...current,
         cache: { ...current.cache, technology: "redis" },
       }));
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        void flow.current?.fitView({ padding: 0.15 });
-      }),
-    );
   };
   const loadBoard = (board: Board) => {
     setNodes(
@@ -458,7 +387,7 @@ function App() {
     setSelection(
       board.nodes.find((n) => n.data.role === "balancer")?.id ??
         board.nodes[0]?.id ??
-        "cache",
+        "",
     );
     setRequestId(null);
     message("reset");
@@ -480,11 +409,7 @@ function App() {
       resilience: "backend",
     };
     if (focus[kind]) setSelection(focus[kind]!);
-    setToast(
-      kind === "empty"
-        ? "Empty board ready. Add components from the library."
-        : "Scenario loaded. Send a request to begin.",
-    );
+    setToast(kind === "empty" ? "New board" : "Template loaded");
   };
   const importBoard = async (file?: File) => {
     if (!file) return;
@@ -620,9 +545,6 @@ function App() {
               <X size={16} />
             </button>
           </div>
-          <p className="muted library-intro">
-            The building blocks of your system.
-          </p>
           <div className="search-box">
             <Search size={15} />
             <input
@@ -674,26 +596,8 @@ function App() {
                 })}
             </section>
           ))}
-          <div className="library-foot">
-            <div className="coming">
-              <Box size={16} />
-              <span>More building blocks ahead</span>
-            </div>
-            <p>
-              Build with up to eight backend instances.
-              <br />
-              Route traffic. Compare. Break things.
-            </p>
-          </div>
-          <div className="scenario-card">
-            <span className="scenario-eyebrow">
-              <Zap size={13} /> START WITH A SCENARIO
-            </span>
-            <strong>A little cache. A big difference.</strong>
-            <p>
-              Explore hits, misses, and what happens when the database goes
-              down.
-            </p>
+          <details className="board-templates">
+            <summary>Templates</summary>
             <button
               onClick={() => {
                 selectExecutionTab("Challenges");
@@ -703,10 +607,10 @@ function App() {
               Incident challenges <ArrowUpRight size={15} />
             </button>
             <button onClick={() => resetBoard("cache")}>
-              Load cache-aside example <ArrowUpRight size={15} />
+              Cache-aside API <ArrowUpRight size={15} />
             </button>
             <button onClick={() => resetBoard("balanced")}>
-              Load balanced system <ArrowUpRight size={15} />
+              Load-balanced API <ArrowUpRight size={15} />
             </button>
             <button
               onClick={() => {
@@ -721,12 +625,12 @@ function App() {
             </button>
             {(
               [
-                ["redis", "Redis memory lab"],
-                ["kafka", "Kafka replay lab"],
-                ["queue", "Queue delivery lab"],
-                ["database", "Database consistency lab"],
-                ["gateway", "API gateway lab"],
-                ["resilience", "Dependency resilience lab"],
+                ["redis", "Redis cache"],
+                ["kafka", "Kafka stream"],
+                ["queue", "Message queue"],
+                ["database", "Primary and replica"],
+                ["gateway", "API gateway"],
+                ["resilience", "Dependency resilience"],
               ] as const
             ).map(([kind, label]) => (
               <button
@@ -742,7 +646,7 @@ function App() {
                 <ArrowUpRight size={15} />
               </button>
             ))}
-          </div>
+          </details>
         </aside>
         <main
           className={`center ${workspaceExpanded && ["Interview", "Challenges"].includes(executionTab) ? "workspace-expanded" : ""}`}
@@ -860,16 +764,16 @@ function App() {
               const role = e.dataTransfer.getData(
                 "application/liveboard",
               ) as Role;
-              if (catalog.some((c) => c.role === role)) add(role);
+              if (catalog.some((c) => c.role === role))
+                add(
+                  role,
+                  flow.current?.screenToFlowPosition({
+                    x: e.clientX,
+                    y: e.clientY,
+                  }),
+                );
             }}
           >
-            <div className="canvas-info">
-              <span className="scenario-label">
-                <span className="tiny-dot" />
-                {prompt[0]}
-              </span>
-              <p>{prompt[1]}</p>
-            </div>
             <ReactFlow
               nodes={renderedNodes}
               edges={renderedEdges}
@@ -879,12 +783,8 @@ function App() {
               edgeTypes={edgeTypes}
               onInit={(instance) => {
                 flow.current = instance;
-                requestAnimationFrame(() =>
-                  requestAnimationFrame(() => {
-                    void instance.fitView({ padding: 0.16 });
-                  }),
-                );
               }}
+              fitView={Boolean(saved?.nodes.length)}
               onNodeClick={(_, node) => {
                 setSelection(node.id);
                 setInspectorVisible(true);
@@ -902,18 +802,12 @@ function App() {
                   setEdges((edges) =>
                     addEdge(createEdge(source.id, target.id), edges),
                   );
-                else
-                  setToast(
-                    "Connect a client to a backend or balancer. Backends connect to cache and database.",
-                  );
+                else setToast("These component ports cannot connect.");
               }}
-              fitView
-              fitViewOptions={{ padding: 0.16 }}
               minZoom={0.15}
               maxZoom={1.5}
               defaultEdgeOptions={{ type: "traffic" }}
             >
-              <AutoFit structureKey={nodes.map((node) => node.id).join(",")} />
               <Background color="#d8ded9" gap={20} size={1} />
               <Controls showInteractive={false} />
               {minimapVisible && (
@@ -934,17 +828,13 @@ function App() {
             {!nodes.length && (
               <div className="empty-board">
                 <Layers size={32} />
-                <h2>Your next system starts here.</h2>
-                <p>
-                  Add a client, backend, cache, and database.
-                  <br />
-                  Drag between the ports to connect them.
-                </p>
+                <h2>Untitled system</h2>
+                <p>Add components and connect their ports.</p>
                 <button
                   className="save-button"
-                  onClick={() => resetBoard("cache")}
+                  onClick={() => setLibraryVisible(true)}
                 >
-                  Or load the example <ArrowRight size={14} />
+                  <Plus size={14} /> Add components <kbd>/</kbd>
                 </button>
               </div>
             )}
@@ -1009,7 +899,7 @@ function App() {
                   <h2>Execution</h2>
                 </button>
                 <span className="execution-status">
-                  {busy ? "Running" : "Ready to explore"}
+                  {busy ? "Running" : "Idle"}
                 </span>
               </div>
               <div className="playback">
@@ -1113,7 +1003,7 @@ function App() {
                     <Play size={13} fill="currentColor" /> Send request
                   </button>
                 </div>
-              ) : (
+              ) : nodes.some((node) => node.data.role === "producer") ? (
                 <div className="message-bar">
                   <span>Send an event to connected streams and queues</span>
                   <button onClick={() => message("produce", { count: 1 })}>
@@ -1126,7 +1016,7 @@ function App() {
                     Producer settings
                   </button>
                 </div>
-              ))}
+              ) : null)}
             <div className="execution-tabs">
               {[
                 "Requests",
@@ -1148,7 +1038,7 @@ function App() {
                     className={executionTab === t ? "active" : ""}
                     onClick={() => selectExecutionTab(t)}
                   >
-                    {t}
+                    {t === "Technology lab" ? "System state" : t}
                     {t === "Requests" && <span>{state.metrics.completed}</span>}
                     {t === "Traffic" && state.traffic.running && (
                       <span className="traffic-running-dot" />
@@ -1231,9 +1121,7 @@ function App() {
 
               {executionTab === "Technology lab" && (
                 <Suspense
-                  fallback={
-                    <p className="lab-empty">Loading technology lab…</p>
-                  }
+                  fallback={<p className="lab-empty">Loading system state…</p>}
                 >
                   <LabPanel
                     key={title}
@@ -1478,96 +1366,98 @@ function App() {
           )}
         </div>
       </div>
-      <div className="board-runbar" aria-label="Quick simulation controls">
-        <button
-          className="icon-button"
-          aria-label={playing ? "Pause simulation" : "Play simulation"}
-          title={playing ? "Pause simulation" : "Play simulation"}
-          onClick={() => {
-            setPlaying(!playing);
-            message("play", { value: +!playing });
-          }}
-        >
-          {playing ? <Pause size={16} /> : <Play size={16} />}
-        </button>
-        <button
-          className="icon-button"
-          aria-label="Step simulation"
-          title="Step simulation"
-          onClick={() => {
-            setPlaying(false);
-            message("play", { value: 0 });
-            message("step");
-          }}
-        >
-          <SkipForward size={16} />
-        </button>
-        <span className="quick-clock">{(state.now / 1000).toFixed(1)}s</span>
-        <span className="tool-divider" />
-        {hasClient ? (
-          <>
-            <code>GET</code>
-            <input
-              aria-label="Quick request path"
-              value={path}
-              onChange={(event) => setPath(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
+      {nodes.length > 0 && (
+        <div className="board-runbar" aria-label="Quick simulation controls">
+          <button
+            className="icon-button"
+            aria-label={playing ? "Pause simulation" : "Play simulation"}
+            title={playing ? "Pause simulation" : "Play simulation"}
+            onClick={() => {
+              setPlaying(!playing);
+              message("play", { value: +!playing });
+            }}
+          >
+            {playing ? <Pause size={16} /> : <Play size={16} />}
+          </button>
+          <button
+            className="icon-button"
+            aria-label="Step simulation"
+            title="Step simulation"
+            onClick={() => {
+              setPlaying(false);
+              message("play", { value: 0 });
+              message("step");
+            }}
+          >
+            <SkipForward size={16} />
+          </button>
+          <span className="quick-clock">{(state.now / 1000).toFixed(1)}s</span>
+          <span className="tool-divider" />
+          {hasClient ? (
+            <>
+              <code>GET</code>
+              <input
+                aria-label="Quick request path"
+                value={path}
+                onChange={(event) => setPath(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    message("send", { path, count: traffic });
+                    setRequestId(null);
+                  }
+                }}
+              />
+              <select
+                aria-label="Quick request count"
+                title="Requests per send"
+                value={traffic}
+                onChange={(event) => setTraffic(Number(event.target.value))}
+              >
+                <option value={1}>1×</option>
+                <option value={10}>10×</option>
+                <option value={50}>50×</option>
+              </select>
+              <button
+                className="send-button"
+                onClick={() => {
                   message("send", { path, count: traffic });
                   setRequestId(null);
-                }
-              }}
-            />
-            <select
-              aria-label="Quick request count"
-              title="Requests per send"
-              value={traffic}
-              onChange={(event) => setTraffic(Number(event.target.value))}
-            >
-              <option value={1}>1×</option>
-              <option value={10}>10×</option>
-              <option value={50}>50×</option>
-            </select>
+                }}
+              >
+                <Play size={13} fill="currentColor" />
+                Send request
+              </button>
+            </>
+          ) : nodes.some((node) => node.data.role === "producer") ? (
             <button
               className="send-button"
-              onClick={() => {
-                message("send", { path, count: traffic });
-                setRequestId(null);
-              }}
+              onClick={() => message("produce", { count: 1 })}
             >
-              <Play size={13} fill="currentColor" />
-              Send request
+              <Send size={14} />
+              Produce event
             </button>
-          </>
-        ) : nodes.some((node) => node.data.role === "producer") ? (
-          <button
-            className="send-button"
-            onClick={() => message("produce", { count: 1 })}
-          >
-            <Send size={14} />
-            Produce event
-          </button>
-        ) : (
-          <button
-            className="send-button"
-            onClick={() => setLibraryVisible(true)}
-          >
-            <Plus size={14} />
-            Add components
-          </button>
-        )}
-        {hasClient && (
-          <button
-            className="quick-results"
-            onClick={() => selectExecutionTab("Requests")}
-            title="Open request results"
-          >
-            {state.metrics.completed}{" "}
-            {state.metrics.completed === 1 ? "result" : "results"}
-            <ChevronRight size={13} />
-          </button>
-        )}
-      </div>
+          ) : (
+            <button
+              className="send-button"
+              onClick={() => setLibraryVisible(true)}
+            >
+              <Plus size={14} />
+              Add components
+            </button>
+          )}
+          {hasClient && (
+            <button
+              className="quick-results"
+              onClick={() => selectExecutionTab("Requests")}
+              title="Open request results"
+            >
+              {state.metrics.completed}{" "}
+              {state.metrics.completed === 1 ? "result" : "results"}
+              <ChevronRight size={13} />
+            </button>
+          )}
+        </div>
+      )}
       {toast && (
         <div className="toast" role="status">
           <Check size={15} />
@@ -1583,7 +1473,7 @@ function App() {
       <dialog
         ref={helpDialog}
         className="help-modal"
-        aria-label="Getting started"
+        aria-label="Board controls"
         onCancel={() => setHelp(false)}
       >
         <button
@@ -1596,33 +1486,32 @@ function App() {
         <span className="brand-icon">
           <Network size={23} />
         </span>
-        <h2>Build. Run. Explain.</h2>
-        <p>
-          Start with the cache example, build a checkout system, or solve an
-          incident challenge. Select a component to configure its behavior.
-        </p>
-        <ol>
+        <h2>Board controls</h2>
+        <ul>
           <li>
-            Send a request and follow the colored arrows. Orange carries
-            requests. Blue carries responses.
+            Press / to search components. Drag a component onto the board or
+            click to add it.
           </li>
-          <li>Send the same request again to see a cache hit.</li>
-          <li>Select the cache and expire its entries.</li>
-          <li>Select the database and switch it offline.</li>
-          <li>Send a request again to inspect the failure.</li>
-        </ol>
-        <p>
-          Press / to add components. Press Escape to hide panels. Toggle the
-          minimap from the tool dock. Hide either side panel, collapse
-          Execution, or drag its divider to make more room for the board. Pause
-          and step through each decision. Use New board to assemble the scenario
-          yourself. Load a technology lab to configure Redis, Kafka, RabbitMQ,
-          SQS, database reads, or an API gateway. Select a component to change
-          its technology and controls. Produce events in streaming scenarios.
-          Inspect offsets, messages, and decisions in Technology lab.
-        </p>
+          <li>
+            Connect ports to route requests and messages. Select a component or
+            connection to configure it.
+          </li>
+          <li>
+            Use Run to send requests, inspect responses, generate traffic, and
+            inspect system state.
+          </li>
+          <li>
+            Pause or step execution to inspect a decision. Orange arrows show
+            requests. Blue arrows show responses.
+          </li>
+          <li>Press Escape to hide panels. Toggle Map to show the minimap.</li>
+          <li>
+            Use the Board menu to save, import, or export. Templates are
+            available in the component library.
+          </li>
+        </ul>
         <button className="save-button" onClick={() => setHelp(false)}>
-          Start exploring <ArrowRight size={14} />
+          Close <ArrowRight size={14} />
         </button>
       </dialog>
     </div>

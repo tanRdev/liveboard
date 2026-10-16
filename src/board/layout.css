@@ -871,3 +871,38 @@
     margin-inline: 1px;
   }
 }
+
+.board-templates {
+  border-top: 1px solid #e3e8e1;
+  margin-top: 16px;
+  padding-top: 14px;
+}
+.board-templates summary {
+  cursor: pointer;
+  color: #526449;
+  font-size: 12px;
+  font-weight: 600;
+  padding-bottom: 8px;
+}
+.board-templates > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 9px 6px;
+  background: transparent;
+  border: 0;
+  color: #526449;
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 5px;
+}
+.board-templates > button:hover {
+  background: #edf2e9;
+}
+.board-shell .empty-board {
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: transparent;
+}
