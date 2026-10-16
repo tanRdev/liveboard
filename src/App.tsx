@@ -16,17 +16,17 @@ import {
   ArrowUpRight,
   Box,
   Check,
-  CheckCheck,
   ChevronDown,
   ChevronUp,
   PanelLeftClose,
+  Map,
+  Activity,
+  Trophy,
+  ClipboardList,
   PanelRightClose,
   ChevronRight,
-  CircleHelp,
   Clock3,
-  Download,
   Expand,
-  FilePlus2,
   Layers,
   MousePointer2,
   Network,
@@ -37,7 +37,6 @@ import {
   Search,
   Send,
   SkipForward,
-  Upload,
   X,
   Zap,
 } from "lucide-react";
@@ -78,6 +77,7 @@ import type { RecordedRun, ExperimentStatus } from "./InterviewPanel";
 import useInterviewClock from "./useInterviewClock";
 import { ConnectionInspector } from "./ResilienceControls";
 import Inspector from "./Inspector";
+import BoardMenu from "./BoardMenu";
 import ExecutionResizeHandle from "./ExecutionResizeHandle";
 const edgeTypes = { traffic: TrafficEdge };
 const nodeTypes = { component: ComponentNode };
@@ -268,13 +268,10 @@ function App() {
   const selectedEdge = edges.find((e) => e.id === selection);
   const fileInput = useRef<HTMLInputElement>(null);
   const [focused, setFocused] = useState(false);
-  const [libraryVisible, setLibraryVisible] = useState(
-    () => window.innerWidth > 1200,
-  );
-  const [inspectorVisible, setInspectorVisible] = useState(
-    () => window.innerWidth > 700,
-  );
-  const [executionCollapsed, setExecutionCollapsed] = useState(false);
+  const [libraryVisible, setLibraryVisible] = useState(false);
+  const [inspectorVisible, setInspectorVisible] = useState(false);
+  const [minimapVisible, setMinimapVisible] = useState(false);
+  const [executionCollapsed, setExecutionCollapsed] = useState(true);
   const [executionHeight, setExecutionHeight] = useState<number | undefined>();
   const selectExecutionTab = (next: string) => {
     setTab(next);
@@ -283,6 +280,37 @@ function App() {
       setWorkspaceExpanded(false);
   };
   const [workspaceExpanded, setWorkspaceExpanded] = useState(false);
+  useEffect(() => {
+    function keyboard(event: KeyboardEvent) {
+      if (document.querySelector("dialog[open], #board-menu")) return;
+      if (event.key === "Escape") {
+        setLibraryVisible(false);
+        setInspectorVisible(false);
+        setExecutionCollapsed(true);
+        setWorkspaceExpanded(false);
+      }
+      const target = event.target as HTMLElement;
+      if (
+        event.key === "/" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !target.closest('input,textarea,select,[contenteditable="true"]')
+      ) {
+        event.preventDefault();
+        setLibraryVisible(true);
+        setFocused(false);
+        requestAnimationFrame(() =>
+          document
+            .querySelector<HTMLInputElement>('[aria-label="Search components"]')
+            ?.focus(),
+        );
+      }
+    }
+    document.addEventListener("keydown", keyboard);
+    return () => document.removeEventListener("keydown", keyboard);
+  }, []);
+
   const boardDocument = (): Board => ({
     version: 1,
     nodes,
@@ -369,6 +397,7 @@ function App() {
       id = available;
     } else if (nodes.some((n) => n.id === id)) {
       setSelection(id);
+      setInspectorVisible(true);
       return;
     }
     const node = createNode(role, id);
@@ -400,6 +429,9 @@ function App() {
       })),
     );
     setEdges(board.edges);
+    setExecutionCollapsed(true);
+    setWorkspaceExpanded(false);
+    setInspectorVisible(false);
     setConfig(board.config);
     setPath(board.config.route.replace(/:id\b/g, "1"));
     if (board.nodes.length >= 6 && window.innerWidth < 1600)
@@ -540,88 +572,40 @@ function App() {
   });
   return (
     <div
-      className={`app-shell ${playing ? "" : "simulation-paused"} ${focused ? "focus-mode" : ""} ${!libraryVisible ? "library-hidden" : ""} ${!inspectorVisible ? "inspector-hidden" : ""}`}
+      className={`app-shell board-shell ${playing ? "" : "simulation-paused"} ${focused ? "focus-mode" : ""} ${!libraryVisible ? "library-hidden" : ""} ${!inspectorVisible ? "inspector-hidden" : ""}`}
     >
-      <header className="topbar">
-        <a className="brand" href="/">
-          <span className="brand-icon">
-            <Network size={22} />
-          </span>
-          liveboard<span className="beta">BETA</span>
-        </a>
-        <div className="top-divider" />
-        <div className="workspace">
-          Personal workspace <ChevronDown size={13} />
-        </div>
-        <div className="header-right">
-          <span className="local-label">
-            <span className="status-dot" /> Local workspace
-          </span>
-          <button
-            className="icon-button"
-            aria-label="Help"
-            onClick={() => setHelp(true)}
-          >
-            <CircleHelp size={18} />
-          </button>
-          <span className="avatar">JD</span>
-        </div>
-      </header>
-      <div className="projectbar">
-        <div className="project-title">
-          <span className="board-icon">
-            <Layers size={19} />
-          </span>
-          <input
-            aria-label="Board name"
-            maxLength={80}
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-          <span className="project-badge">Sandbox</span>
-        </div>
-        <div className="project-actions">
-          <button
-            className={`plain-button ${tab === "Interview" ? "interview-selected" : ""}`}
-            onClick={() =>
-              selectExecutionTab(tab === "Interview" ? "Requests" : "Interview")
-            }
-          >
-            Interview workspace
-          </button>
-          <button className="plain-button" onClick={() => resetBoard("empty")}>
-            <FilePlus2 size={15} /> New board
-          </button>
-          <input
-            ref={fileInput}
-            type="file"
-            accept="application/json,.json"
-            hidden
-            aria-label="Import board file"
-            onChange={(event) => {
-              void importBoard(event.target.files?.[0]);
-              event.target.value = "";
-            }}
-          />
-          <button
-            className="plain-button"
-            onClick={() => fileInput.current?.click()}
-          >
-            <Upload size={15} /> Import
-          </button>
-          <button className="plain-button" onClick={exportBoard}>
-            <Download size={15} /> Export
-          </button>
-          <button className="save-button" onClick={save}>
-            <CheckCheck size={15} /> Save board
-          </button>
-        </div>
-      </div>
+      <BoardMenu
+        title={title}
+        onTitle={setTitle}
+        onNew={() => resetBoard("empty")}
+        onImport={() => fileInput.current?.click()}
+        onExport={exportBoard}
+        onSave={save}
+        onHelp={() => setHelp(true)}
+      />
+      <input
+        ref={fileInput}
+        type="file"
+        accept="application/json,.json"
+        hidden
+        aria-label="Import board file"
+        onChange={(event) => {
+          void importBoard(event.target.files?.[0]);
+          event.target.value = "";
+        }}
+      />
       <div className="main-layout">
         <aside className="library">
           <div className="panel-heading">
             <h2>Components</h2>
             <span className="count">{catalog.length}</span>
+            <button
+              className="icon-button"
+              aria-label="Close component library"
+              onClick={() => setLibraryVisible(false)}
+            >
+              <X size={16} />
+            </button>
           </div>
           <p className="muted library-intro">
             The building blocks of your system.
@@ -750,68 +734,111 @@ function App() {
         <main
           className={`center ${workspaceExpanded && ["Interview", "Challenges"].includes(executionTab) ? "workspace-expanded" : ""}`}
         >
-          <div className="canvas-top">
-            <div className="canvas-tabs">
-              <span className="active">
-                <Network size={14} /> Architecture
-              </span>
-              <span className="canvas-caption">
-                Build it. Run it. Understand it.
-              </span>
-            </div>
+          <nav className="canvas-top" aria-label="Board tools">
             <div className="canvas-layout-controls">
               <button
-                className="icon-button"
+                className={`board-tool ${libraryVisible && !focused ? "selected" : ""}`}
                 aria-label={
                   libraryVisible && !focused
                     ? "Hide component library"
-                    : "Show component library"
+                    : "Add components"
                 }
-                aria-pressed={libraryVisible && !focused}
-                title="Toggle component library"
+                aria-expanded={libraryVisible && !focused}
                 onClick={() => {
                   setLibraryVisible(focused || !libraryVisible);
                   setFocused(false);
                 }}
+                title="Add components"
               >
-                <PanelLeftClose size={16} />
+                <Plus size={17} />
+                <span>Add</span>
               </button>
               <button
-                className="icon-button"
+                className={`board-tool ${inspectorVisible && !focused ? "selected" : ""}`}
                 aria-label={
                   inspectorVisible && !focused
                     ? "Hide inspector"
                     : "Show inspector"
                 }
-                aria-pressed={inspectorVisible && !focused}
-                title="Toggle inspector"
+                aria-expanded={inspectorVisible && !focused}
                 onClick={() => {
                   setInspectorVisible(focused || !inspectorVisible);
                   setFocused(false);
                 }}
+                title="Inspector"
               >
-                <PanelRightClose size={16} />
+                <PanelRightClose size={17} />
+                <span>Inspect</span>
               </button>
               <button
-                className="plain-button focus-button"
+                className={`board-tool ${!executionCollapsed ? "selected" : ""}`}
+                aria-label={
+                  executionCollapsed
+                    ? "Show execution panel"
+                    : "Hide execution panel"
+                }
+                aria-expanded={!executionCollapsed}
                 onClick={() => {
-                  setFocused(!focused);
-                  setExecutionCollapsed(!focused);
+                  setExecutionCollapsed((value) => !value);
+                  setWorkspaceExpanded(false);
                 }}
+                title="Requests, traces, and traffic"
               >
-                <Expand size={13} />
-                {focused ? "Show panels" : "Focus canvas"}
+                <Activity size={17} />
+                <span>Run</span>
+                {busy && <i className="tool-running-dot" />}
+              </button>
+              <span className="tool-divider" />
+              <button
+                className={`board-tool ${!executionCollapsed && tab === "Challenges" ? "selected" : ""}`}
+                onClick={() => selectExecutionTab("Challenges")}
+                title="Incident challenges"
+              >
+                <Trophy size={16} />
+                <span>Challenges</span>
+              </button>
+              <button
+                className={`board-tool ${!executionCollapsed && tab === "Interview" ? "selected" : ""}`}
+                onClick={() => selectExecutionTab("Interview")}
+                title="Interview workspace"
+              >
+                <ClipboardList size={16} />
+                <span>Interview</span>
+              </button>
+              <span className="tool-divider" />
+              <button
+                className="icon-button"
+                aria-label={minimapVisible ? "Hide minimap" : "Show minimap"}
+                aria-pressed={minimapVisible}
+                title="Toggle minimap"
+                onClick={() => setMinimapVisible((value) => !value)}
+              >
+                <Map size={17} />
               </button>
               <button
                 className="icon-button"
-                title="Fit board"
                 aria-label="Fit board"
-                onClick={() => flow.current?.fitView({ padding: 0.16 })}
+                title="Fit board"
+                onClick={() => flow.current?.fitView({ padding: 0.12 })}
               >
-                <Expand size={15} />
+                <Expand size={17} />
+              </button>
+              <button
+                className="icon-button"
+                aria-label="Hide all panels"
+                title="Hide all panels"
+                onClick={() => {
+                  setLibraryVisible(false);
+                  setInspectorVisible(false);
+                  setExecutionCollapsed(true);
+                  setWorkspaceExpanded(false);
+                  setMinimapVisible(false);
+                }}
+              >
+                <PanelLeftClose size={17} />
               </button>
             </div>
-          </div>
+          </nav>
           <div
             className="canvas"
             onDragOver={(e) => e.preventDefault()}
@@ -876,18 +903,20 @@ function App() {
               <AutoFit structureKey={nodes.map((node) => node.id).join(",")} />
               <Background color="#d8ded9" gap={20} size={1} />
               <Controls showInteractive={false} />
-              <MiniMap
-                nodeColor={(n) =>
-                  ({
-                    client: "#b3c2de",
-                    backend: "#bdb5d6",
-                    cache: "#98c9af",
-                    database: "#dfc794",
-                    balancer: "#a8c6d4",
-                  })[String(n.data.role)] || "#ccc"
-                }
-                maskColor="rgba(248,249,247,.7)"
-              />
+              {minimapVisible && (
+                <MiniMap
+                  nodeColor={(n) =>
+                    ({
+                      client: "#b3c2de",
+                      backend: "#bdb5d6",
+                      cache: "#98c9af",
+                      database: "#dfc794",
+                      balancer: "#a8c6d4",
+                    })[String(n.data.role)] || "#ccc"
+                  }
+                  maskColor="rgba(248,249,247,.7)"
+                />
+              )}
             </ReactFlow>
             {!nodes.length && (
               <div className="empty-board">
@@ -1356,85 +1385,176 @@ function App() {
             </div>
           </section>
         </main>
-        {selectedEdge ? (
-          <ConnectionInspector
-            id={selectedEdge.id}
-            source={selectedEdge.source}
-            target={selectedEdge.target}
-            config={config}
-            onConfig={setConfig}
-            onRemove={() => {
-              setEdges((current) =>
-                current.filter((edge) => edge.id !== selectedEdge.id),
-              );
-              setSelection("");
-            }}
-          />
+        <div className="inspector-surface">
+          <button
+            className="icon-button panel-dismiss"
+            aria-label="Close inspector"
+            onClick={() => setInspectorVisible(false)}
+          >
+            <X size={16} />
+          </button>
+          {selectedEdge ? (
+            <ConnectionInspector
+              id={selectedEdge.id}
+              source={selectedEdge.source}
+              target={selectedEdge.target}
+              config={config}
+              onConfig={setConfig}
+              onRemove={() => {
+                setEdges((current) =>
+                  current.filter((edge) => edge.id !== selectedEdge.id),
+                );
+                setSelection("");
+              }}
+            />
+          ) : (
+            <Inspector
+              node={selectedNode}
+              nodes={nodes}
+              edges={edges}
+              config={config}
+              state={state}
+              path={path}
+              onPath={setPath}
+              onConfig={setConfig}
+              onSelect={setSelection}
+              onRename={(name) =>
+                setNodes((ns) =>
+                  ns.map((n) =>
+                    n.id === selection
+                      ? { ...n, data: { ...n.data, name } }
+                      : n,
+                  ),
+                )
+              }
+              onRemove={() => {
+                setConfig((current) => {
+                  const backendOverrides = { ...current.backendOverrides };
+                  delete backendOverrides[selection];
+                  const resilienceOverrides = {
+                      ...current.resilienceOverrides,
+                    },
+                    connectionOverrides = { ...current.connectionOverrides };
+                  delete resilienceOverrides[selection];
+                  delete connectionOverrides[`${selection}-database`];
+                  const serviceOverrides = { ...current.serviceOverrides };
+                  delete serviceOverrides[selection];
+                  const consumerOverrides = { ...current.consumerOverrides },
+                    workerOverrides = { ...current.workerOverrides };
+                  delete consumerOverrides[selection];
+                  delete workerOverrides[selection];
+                  return {
+                    ...current,
+                    backendOverrides,
+                    consumerOverrides,
+                    workerOverrides,
+                    resilienceOverrides,
+                    connectionOverrides,
+                    serviceOverrides,
+                  };
+                });
+                setNodes((ns) => ns.filter((n) => n.id !== selection));
+                setEdges((es) =>
+                  es.filter(
+                    (e) => e.source !== selection && e.target !== selection,
+                  ),
+                );
+              }}
+              onMessage={message}
+            />
+          )}
+        </div>
+      </div>
+      <div className="board-runbar" aria-label="Quick simulation controls">
+        <button
+          className="icon-button"
+          aria-label={playing ? "Pause simulation" : "Play simulation"}
+          title={playing ? "Pause simulation" : "Play simulation"}
+          onClick={() => {
+            setPlaying(!playing);
+            message("play", { value: +!playing });
+          }}
+        >
+          {playing ? <Pause size={16} /> : <Play size={16} />}
+        </button>
+        <button
+          className="icon-button"
+          aria-label="Step simulation"
+          title="Step simulation"
+          onClick={() => {
+            setPlaying(false);
+            message("play", { value: 0 });
+            message("step");
+          }}
+        >
+          <SkipForward size={16} />
+        </button>
+        <span className="quick-clock">{(state.now / 1000).toFixed(1)}s</span>
+        <span className="tool-divider" />
+        {hasClient ? (
+          <>
+            <code>GET</code>
+            <input
+              aria-label="Quick request path"
+              value={path}
+              onChange={(event) => setPath(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  message("send", { path, count: traffic });
+                  setRequestId(null);
+                }
+              }}
+            />
+            <select
+              aria-label="Quick request count"
+              title="Requests per send"
+              value={traffic}
+              onChange={(event) => setTraffic(Number(event.target.value))}
+            >
+              <option value={1}>1×</option>
+              <option value={10}>10×</option>
+              <option value={50}>50×</option>
+            </select>
+            <button
+              className="send-button"
+              onClick={() => {
+                message("send", { path, count: traffic });
+                setRequestId(null);
+              }}
+            >
+              <Play size={13} fill="currentColor" />
+              Send request
+            </button>
+          </>
+        ) : nodes.some((node) => node.data.role === "producer") ? (
+          <button
+            className="send-button"
+            onClick={() => message("produce", { count: 1 })}
+          >
+            <Send size={14} />
+            Produce event
+          </button>
         ) : (
-          <Inspector
-            node={selectedNode}
-            nodes={nodes}
-            edges={edges}
-            config={config}
-            state={state}
-            path={path}
-            onPath={setPath}
-            onConfig={setConfig}
-            onSelect={setSelection}
-            onRename={(name) =>
-              setNodes((ns) =>
-                ns.map((n) =>
-                  n.id === selection ? { ...n, data: { ...n.data, name } } : n,
-                ),
-              )
-            }
-            onRemove={() => {
-              setConfig((current) => {
-                const backendOverrides = { ...current.backendOverrides };
-                delete backendOverrides[selection];
-                const resilienceOverrides = { ...current.resilienceOverrides },
-                  connectionOverrides = { ...current.connectionOverrides };
-                delete resilienceOverrides[selection];
-                delete connectionOverrides[`${selection}-database`];
-                const serviceOverrides = { ...current.serviceOverrides };
-                delete serviceOverrides[selection];
-                const consumerOverrides = { ...current.consumerOverrides },
-                  workerOverrides = { ...current.workerOverrides };
-                delete consumerOverrides[selection];
-                delete workerOverrides[selection];
-                return {
-                  ...current,
-                  backendOverrides,
-                  consumerOverrides,
-                  workerOverrides,
-                  resilienceOverrides,
-                  connectionOverrides,
-                  serviceOverrides,
-                };
-              });
-              setNodes((ns) => ns.filter((n) => n.id !== selection));
-              setEdges((es) =>
-                es.filter(
-                  (e) => e.source !== selection && e.target !== selection,
-                ),
-              );
-            }}
-            onMessage={message}
-          />
+          <button
+            className="send-button"
+            onClick={() => setLibraryVisible(true)}
+          >
+            <Plus size={14} />
+            Add components
+          </button>
+        )}
+        {hasClient && (
+          <button
+            className="quick-results"
+            onClick={() => selectExecutionTab("Requests")}
+            title="Open request results"
+          >
+            {state.metrics.completed}{" "}
+            {state.metrics.completed === 1 ? "result" : "results"}
+            <ChevronRight size={13} />
+          </button>
         )}
       </div>
-      <footer className="statusbar">
-        <span>
-          <span className="status-dot" /> All systems are simulated
-        </span>
-        <span>
-          {nodes.length} components <i>·</i> {edges.length} connections
-        </span>
-        <span className="footer-right">
-          A space to think in systems.
-          <span className="footer-brand">liveboard</span>
-        </span>
-      </footer>
       {toast && (
         <div className="toast" role="status">
           <Check size={15} />
@@ -1479,13 +1599,14 @@ function App() {
           <li>Send a request again to inspect the failure.</li>
         </ol>
         <p>
-          Hide either side panel, collapse Execution, or drag its divider to
-          make more room for the board. Pause and step through each decision.
-          Use New board to assemble the scenario yourself. Load a technology lab
-          to configure Redis, Kafka, RabbitMQ, SQS, database reads, or an API
-          gateway. Select a component to change its technology and controls.
-          Produce events in streaming scenarios. Inspect offsets, messages, and
-          decisions in Technology lab.
+          Press / to add components. Press Escape to hide panels. Toggle the
+          minimap from the tool dock. Hide either side panel, collapse
+          Execution, or drag its divider to make more room for the board. Pause
+          and step through each decision. Use New board to assemble the scenario
+          yourself. Load a technology lab to configure Redis, Kafka, RabbitMQ,
+          SQS, database reads, or an API gateway. Select a component to change
+          its technology and controls. Produce events in streaming scenarios.
+          Inspect offsets, messages, and decisions in Technology lab.
         </p>
         <button className="save-button" onClick={() => setHelp(false)}>
           Start exploring <ArrowRight size={14} />

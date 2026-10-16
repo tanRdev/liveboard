@@ -3772,3 +3772,536 @@ a {
 .app-shell.library-hidden.inspector-hidden .main-layout {
   grid-template-columns: minmax(0, 1fr);
 }
+
+/* Board-first workspace. Panels float over the canvas without resizing it. */
+.app-shell.board-shell {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+.app-shell.board-shell .main-layout {
+  position: absolute;
+  inset: 0;
+  display: block;
+  min-height: 0;
+}
+.board-shell .center {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+.board-shell .canvas {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+.board-identity,
+.board-shell .canvas-top,
+.board-runbar {
+  background: #fffffff5;
+  border: 1px solid #dfe7e1;
+  border-radius: 11px;
+  box-shadow: 0 3px 14px #223d2e10;
+  backdrop-filter: blur(12px);
+}
+.board-identity {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  height: 44px;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  padding: 4px 9px 4px 4px;
+  gap: 7px;
+  max-width: calc(100vw - 620px);
+}
+.board-menu-trigger {
+  height: 34px;
+  padding: 0 7px;
+  color: #2c6b4e;
+  border-radius: 7px;
+  gap: 4px;
+}
+.board-menu-trigger:hover {
+  background: #edf4ef;
+}
+.board-identity > input {
+  min-width: 70px;
+  width: 210px;
+  max-width: 100%;
+  border: 0;
+  background: transparent;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  color: #344b3d;
+  padding: 6px 2px;
+}
+.board-menu-popover {
+  position: absolute;
+  top: 51px;
+  left: 0;
+  width: 248px;
+  padding: 9px;
+  border: 1px solid #dce6de;
+  border-radius: 11px;
+  background: white;
+  box-shadow: 0 10px 40px #203b3024;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.board-menu-popover > strong {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  padding: 8px 10px 12px;
+  align-items: center;
+}
+.board-menu-popover small {
+  font-size: 9px;
+  font-weight: 400;
+  color: #839086;
+}
+.board-menu-popover button {
+  justify-content: flex-start;
+  border-radius: 6px;
+  padding: 10px;
+}
+.board-menu-popover button:hover {
+  background: #f0f5f1;
+}
+.board-menu-popover hr {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid #e8ede8;
+}
+.board-shell .canvas-top {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  left: auto;
+  height: 44px;
+  min-height: 0;
+  width: auto;
+  padding: 4px;
+  z-index: 35;
+}
+.board-shell .canvas-layout-controls {
+  gap: 3px;
+  height: 100%;
+}
+.board-tool {
+  height: 34px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 11px;
+  color: #62786a;
+}
+.board-tool:hover,
+.board-tool.selected {
+  background: #eaf3ed;
+  color: #286847;
+}
+.board-shell .canvas-layout-controls .icon-button {
+  width: 32px;
+  height: 34px;
+  border-radius: 7px;
+}
+.board-shell .canvas-layout-controls .icon-button[aria-pressed="true"] {
+  background: #eaf3ed;
+  color: #286847;
+}
+.tool-divider {
+  display: block;
+  height: 20px;
+  width: 1px;
+  background: #e1e8e3;
+  flex-shrink: 0;
+  margin: 0 3px;
+}
+.tool-running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e8790c;
+}
+.board-shell .library {
+  position: absolute;
+  top: 72px;
+  bottom: 86px;
+  left: 14px;
+  width: 280px;
+  max-width: calc(100vw - 28px);
+  padding: 17px 15px;
+  z-index: 30;
+  border: 1px solid #dfe7e1;
+  border-radius: 12px;
+  background: #fffffff7;
+  box-shadow: 0 8px 30px #263f2e17;
+  overflow: auto;
+}
+.board-shell .library .panel-heading {
+  flex-shrink: 0;
+  gap: 8px;
+}
+.board-shell .library .panel-heading .count {
+  margin-left: auto;
+}
+.board-shell .library .panel-heading .icon-button {
+  width: 24px;
+  height: 24px;
+}
+.board-shell.library-hidden .library {
+  display: none;
+}
+.inspector-surface {
+  position: absolute;
+  top: 72px;
+  bottom: 86px;
+  right: 14px;
+  width: 310px;
+  max-width: calc(100vw - 28px);
+  z-index: 31;
+  background: white;
+  border: 1px solid #dfe7e1;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 8px 30px #263f2e17;
+}
+.board-shell .inspector-surface .inspector {
+  position: static;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  box-shadow: none;
+  min-height: 0;
+}
+.board-shell.inspector-hidden .inspector-surface {
+  display: none;
+}
+.panel-dismiss {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 3;
+  width: 27px;
+  height: 27px;
+  background: white;
+  border-radius: 6px;
+}
+.inspector-surface .panel-heading {
+  padding-right: 48px;
+}
+.board-shell .execution {
+  position: absolute;
+  bottom: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(1080px, calc(100% - 28px));
+  height: 320px;
+  min-height: 180px;
+  max-height: calc(100dvh - 170px);
+  z-index: 25;
+  border: 1px solid #dce6df;
+  border-radius: 12px;
+  box-shadow: 0 8px 36px #213d2e24;
+  overflow: visible;
+}
+.board-shell .execution.expanded,
+.board-shell .execution.interview-expanded {
+  height: 390px;
+  max-height: calc(100dvh - 170px);
+}
+.board-shell .execution-collapsed {
+  display: none;
+}
+.board-shell .execution-heading {
+  border-radius: 12px 12px 0 0;
+  background: #fff;
+}
+.board-shell .execution-body {
+  padding-bottom: 8px;
+  border-radius: 0 0 12px 12px;
+  background: #fff;
+}
+.board-shell .center.workspace-expanded .execution {
+  top: 72px;
+  bottom: 84px;
+  left: 14px;
+  right: 14px;
+  width: auto;
+  height: auto;
+  min-height: 180px;
+  max-height: none;
+  transform: none;
+}
+.board-shell .execution-resize {
+  top: -5px;
+}
+.board-shell .execution-heading .playback > [aria-label="Pause simulation"],
+.board-shell .execution-heading .playback > [aria-label="Play simulation"],
+.board-shell .execution-heading .playback > [aria-label="Step simulation"] {
+  display: none;
+}
+.board-runbar {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  padding: 6px;
+  gap: 6px;
+  height: 48px;
+  max-width: calc(100vw - 28px);
+}
+.board-runbar .icon-button {
+  height: 32px;
+  width: 30px;
+  flex-shrink: 0;
+}
+.quick-clock {
+  color: #8b9b90;
+  font:
+    10px "IBM Plex Mono",
+    monospace;
+  width: 44px;
+}
+.board-runbar code {
+  color: #3c7954;
+  font-size: 10px;
+  padding-left: 4px;
+}
+.board-runbar input {
+  width: 160px;
+  min-width: 55px;
+  border: 0;
+  background: transparent;
+  font:
+    11px "IBM Plex Mono",
+    monospace;
+  color: #415f4a;
+  padding: 7px 2px;
+}
+.board-runbar .send-button {
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 7px;
+  padding-inline: 12px;
+}
+.quick-results {
+  color: #728a79;
+  padding: 7px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.board-shell .react-flow__controls {
+  bottom: 84px;
+  left: 14px;
+  margin: 0;
+  border: 1px solid #dfe7e1;
+  border-radius: 9px;
+  overflow: hidden;
+  box-shadow: 0 3px 12px #263f2e12;
+}
+.board-shell .react-flow__minimap {
+  bottom: 84px;
+  right: 14px;
+  margin: 0;
+  border-radius: 9px;
+  overflow: hidden;
+  box-shadow: 0 3px 12px #263f2e12;
+}
+.board-shell .canvas-info {
+  top: auto;
+  bottom: 19px;
+  left: 14px;
+  right: auto;
+  max-width: calc(50vw - 320px);
+  display: block;
+  padding: 0;
+  background: none;
+  pointer-events: none;
+}
+.board-shell .canvas-info p {
+  display: none;
+}
+.board-shell .canvas-bottom {
+  bottom: 24px;
+  left: auto;
+  right: 16px;
+  width: auto;
+  padding: 0;
+}
+.board-shell .canvas-bottom > span {
+  display: none;
+}
+.board-shell .toast {
+  bottom: 78px;
+  z-index: 60;
+}
+.board-shell .empty-board {
+  top: 50%;
+  transform: translateY(-50%);
+}
+@media (max-width: 1100px) {
+  .board-identity {
+    max-width: calc(100vw - 525px);
+  }
+  .board-identity > input {
+    width: 160px;
+  }
+  .board-tool {
+    padding-inline: 6px;
+    font-size: 10px;
+  }
+  .board-shell .canvas-info {
+    display: none;
+  }
+  .board-shell .canvas-bottom {
+    bottom: 84px;
+  }
+}
+@media (max-width: 800px) {
+  .board-identity {
+    max-width: calc(100vw - 380px);
+  }
+  .board-identity > input {
+    width: 130px;
+  }
+  .board-tool span {
+    display: none;
+  }
+  .board-tool {
+    width: 34px;
+    padding: 0;
+  }
+  .board-shell .canvas-top {
+    max-width: calc(100vw - 190px);
+  }
+  .board-runbar input {
+    width: 120px;
+  }
+  .board-runbar .quick-results {
+    display: none;
+  }
+  .board-shell .execution-status {
+    display: none;
+  }
+}
+@media (max-width: 540px) {
+  .board-identity {
+    top: 10px;
+    left: 10px;
+    max-width: calc(100vw - 20px);
+    height: 40px;
+  }
+  .board-identity > input {
+    width: 170px;
+  }
+  .board-shell .canvas-top {
+    top: 60px;
+    right: 10px;
+    left: 10px;
+    width: max-content;
+    max-width: calc(100vw - 20px);
+  }
+  .board-shell .library,
+  .inspector-surface {
+    top: 114px;
+    bottom: 80px;
+    left: 10px;
+    right: auto;
+    width: calc(100vw - 20px);
+    max-width: none;
+  }
+  .board-shell .inspector-surface {
+    right: 10px;
+    left: auto;
+  }
+  .board-shell .execution {
+    bottom: 76px;
+    max-height: calc(100dvh - 195px);
+    width: calc(100vw - 20px);
+  }
+  .board-shell .center.workspace-expanded .execution {
+    top: 114px;
+    bottom: 76px;
+    right: 10px;
+    left: 10px;
+    min-height: 0;
+  }
+  .board-runbar {
+    bottom: 12px;
+    gap: 3px;
+    padding: 5px;
+    width: calc(100vw - 20px);
+    justify-content: center;
+  }
+  .quick-clock {
+    display: none;
+  }
+  .board-runbar input {
+    width: 90px;
+    flex: 1;
+  }
+  .board-runbar .send-button {
+    font-size: 10px;
+    padding-inline: 8px;
+  }
+  .board-shell .execution-heading {
+    padding-inline: 9px;
+  }
+  .board-shell .playback {
+    gap: 3px;
+  }
+  .board-shell .sim-clock {
+    display: none;
+  }
+  .board-shell .canvas-bottom {
+    display: none;
+  }
+}
+.board-runbar select {
+  width: 49px;
+  padding: 5px 2px;
+  border: 0;
+  background: #f0f5f1;
+  border-radius: 5px;
+  color: #617b69;
+  font-size: 10px;
+}
+@media (min-width: 801px) {
+  .board-shell:not(.inspector-hidden) .react-flow__minimap {
+    right: 338px;
+  }
+  .board-shell:not(.library-hidden) .react-flow__controls {
+    left: 308px;
+  }
+}
+@media (max-width: 360px) {
+  .board-runbar code {
+    display: none;
+  }
+  .board-runbar .icon-button {
+    width: 26px;
+  }
+  .board-shell .canvas-layout-controls {
+    gap: 1px;
+  }
+  .board-shell .canvas-layout-controls .icon-button {
+    width: 27px;
+  }
+  .board-tool {
+    width: 29px;
+  }
+  .board-shell .canvas-top .tool-divider {
+    margin-inline: 1px;
+  }
+}
