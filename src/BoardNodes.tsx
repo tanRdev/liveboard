@@ -14,6 +14,8 @@ import {
 import { Clock3 } from "lucide-react";
 import {
   backendSettings,
+  consumerSettings,
+  workerSettings,
   type Config,
   type Role,
   type Snapshot,
@@ -41,12 +43,19 @@ export function ComponentNode({ id, data, selected }: NodeProps) {
   const offline =
     (role === "database" && !config.online) ||
     (role === "backend" && !settings.online) ||
-    (role === "balancer" && !config.balancer.online);
+    (role === "balancer" && !config.balancer.online) ||
+    (role === "cache" && !config.cache.online) ||
+    (role === "stream" && !config.kafka.online) ||
+    (role === "consumer" && !consumerSettings(config, id).online) ||
+    (role === "queue" && !config.queueSettings.online) ||
+    (role === "worker" && !workerSettings(config, id).online);
   return (
     <div
       className={`component-node ${role} ${selected ? "selected" : ""} ${data.active ? "node-active" : ""}`}
     >
-      {role !== "client" && <Handle type="target" position={Position.Left} />}
+      {!["client", "producer"].includes(role) && (
+        <Handle type="target" position={Position.Left} />
+      )}
       <div className="node-heading">
         <span className={`node-icon ${role}`}>
           <Icon size={21} strokeWidth={1.7} />
@@ -134,7 +143,12 @@ export function ComponentNode({ id, data, selected }: NodeProps) {
             <div className="node-detail">
               <span>Entries</span>
               <strong>
-                {state.entries.length} <em>/ {config.capacity}</em>
+                {state.entries.length}{" "}
+                <em>
+                  {config.cache.technology === "generic"
+                    ? `/ ${config.capacity}`
+                    : "keys"}
+                </em>
               </strong>
             </div>
             {state.entries.length ? (
@@ -143,7 +157,9 @@ export function ComponentNode({ id, data, selected }: NodeProps) {
                   <code>{e.key}</code>
                   <span>
                     <Clock3 size={10} />{" "}
-                    {Math.max(0, Math.ceil((e.expires - state.now) / 1000))}s
+                    {Number.isFinite(e.expires)
+                      ? `${Math.max(0, Math.ceil((e.expires - state.now) / 1000))}s`
+                      : "Persistent"}
                   </span>
                 </div>
               ))
@@ -155,7 +171,135 @@ export function ComponentNode({ id, data, selected }: NodeProps) {
                 <i className="tiny-dot" /> {state.hits} hits
               </span>
               <span>{state.misses} misses</span>
-              <span>{config.eviction}</span>
+              <span>
+                {config.cache.technology === "generic"
+                  ? config.eviction
+                  : config.cache.policy}
+              </span>
+            </div>
+          </>
+        )}
+        {role === "producer" && (
+          <>
+            <div className="node-code">
+              Key: {config.producer.key || "(empty)"}
+            </div>
+            <div className="node-detail">
+              <span>Published</span>
+              <strong>{state.kafka.produced + state.queueLab.published}</strong>
+            </div>
+            <div className="node-footer">Send a payload in Technology lab</div>
+          </>
+        )}
+        {role === "stream" && (
+          <>
+            <div className="node-code">
+              {config.kafka.topic} · {config.kafka.partitions} partitions
+            </div>
+            <div className="partition-mini">
+              {state.kafka.partitions.map((p) => (
+                <div key={p.id}>
+                  <span>P{p.id}</span>
+                  <b>{p.records.length}</b>
+                  <small>offset {p.end}</small>
+                </div>
+              ))}
+            </div>
+            <div className="node-footer">
+              <span>{state.kafka.produced} produced</span>
+              <span>
+                ISR {config.kafka.inSyncReplicas}/
+                {config.kafka.replicationFactor}
+              </span>
+            </div>
+          </>
+        )}
+        {role === "consumer" && (
+          <>
+            <div className="node-code">
+              {consumerSettings(config, id).groupId}
+            </div>
+            <div className="node-detail">
+              <span>Assigned partitions</span>
+              <strong>
+                {state.kafka.groups
+                  .find((g) => g.id === consumerSettings(config, id).groupId)
+                  ?.owners.filter((owner) => owner === id).length ?? 0}
+              </strong>
+            </div>
+            <div className="node-footer">
+              <span>
+                {consumerSettings(config, id).autoCommit
+                  ? "Auto commit"
+                  : "Manual commit"}
+              </span>
+              <span>
+                {state.kafka.deliveries.filter((d) => d.consumer === id).length}{" "}
+                recent deliveries
+              </span>
+            </div>
+          </>
+        )}
+        {role === "queue" && (
+          <>
+            <div className="node-detail">
+              <span>Ready</span>
+              <strong>
+                {
+                  state.queueLab.messages.filter((m) => m.state === "ready")
+                    .length
+                }
+              </strong>
+            </div>
+            <div className="node-detail">
+              <span>In flight</span>
+              <strong>
+                {
+                  state.queueLab.messages.filter((m) =>
+                    ["inflight", "unacked"].includes(m.state),
+                  ).length
+                }
+              </strong>
+            </div>
+            <div className="node-footer">
+              <span>
+                {
+                  state.queueLab.messages.filter((m) => m.state === "dead")
+                    .length
+                }{" "}
+                dead letters
+              </span>
+              <span>{state.queueLab.redelivered} redeliveries</span>
+            </div>
+          </>
+        )}
+        {role === "worker" && (
+          <>
+            <div className="node-code">
+              {workerSettings(config, id).fail
+                ? "Fail deliveries"
+                : "Process & acknowledge"}
+            </div>
+            <div className="node-detail">
+              <span>In flight / limit</span>
+              <strong>
+                {state.queueLab.inProgress.filter((job) => job.worker === id)
+                  .length +
+                  state.queueLab.messages.filter(
+                    (m) => m.worker === id && m.state === "unacked",
+                  ).length}{" "}
+                / {workerSettings(config, id).prefetch}
+              </strong>
+            </div>
+            <div className="node-footer">
+              <span>
+                {workerSettings(config, id).processingMs} ms / message
+              </span>
+              <span>
+                {workerSettings(config, id).ack === "manual"
+                  ? "Manual ack"
+                  : "Ack on success"}
+              </span>
             </div>
           </>
         )}
@@ -163,11 +307,11 @@ export function ComponentNode({ id, data, selected }: NodeProps) {
           <>
             <div className="db-table">
               <span>▤ &nbsp; users</span>
-              <span>{Object.keys(config.records).length} records</span>
+              <span>{Object.keys(state.database.primary).length} records</span>
             </div>
             <div className="node-detail">
               <span>Total reads</span>
-              <strong>{state.reads}</strong>
+              <strong>{state.database.reads}</strong>
             </div>
             <div className="node-footer">
               <span className={!config.online ? "error-text" : ""}>
@@ -178,9 +322,14 @@ export function ComponentNode({ id, data, selected }: NodeProps) {
           </>
         )}
       </div>
-      {["client", "backend", "balancer"].includes(role) && (
-        <Handle type="source" position={Position.Right} />
-      )}
+      {[
+        "client",
+        "backend",
+        "balancer",
+        "producer",
+        "stream",
+        "queue",
+      ].includes(role) && <Handle type="source" position={Position.Right} />}
     </div>
   );
 }

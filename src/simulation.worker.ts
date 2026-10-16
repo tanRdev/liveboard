@@ -13,10 +13,45 @@ onmessage = (
     count?: number;
     value?: number;
     running?: boolean;
+    command?: string;
+    groupId?: string;
+    record?: { id: string; name: string; email: string };
   }>,
 ) => {
   const message = event.data;
   switch (message.type) {
+    case "produce":
+      engine.produce(message.count);
+      break;
+    case "cacheCommand":
+      engine.cacheCommand(message.command ?? "");
+      break;
+    case "commit":
+      engine.kafka.now = engine.state.now;
+      engine.kafka.commit(message.groupId ?? "");
+      break;
+    case "replay":
+      engine.kafka.replay(message.groupId ?? "", engine.state.now);
+      break;
+    case "ack":
+      engine.queueLab.ackAll(engine.state.now);
+      break;
+    case "redrive":
+      engine.queueLab.redrive(engine.state.now);
+      break;
+    case "dbWrite":
+      if (message.record)
+        engine.database.write(
+          message.record,
+          engine.state.now,
+          engine.config.online,
+        );
+      break;
+    case "dbRead":
+      if (engine.config.online)
+        engine.database.read(message.path ?? "1", engine.state.now);
+      else engine.database.state.reply = "Read failed · database offline";
+      break;
     case "configure":
       engine.configure(message.config!);
       break;
@@ -48,6 +83,7 @@ onmessage = (
       break;
     }
   }
+  engine.syncLabs();
   publish();
 };
 setInterval(() => {

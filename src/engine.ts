@@ -1,4 +1,53 @@
-export type Role = "client" | "backend" | "cache" | "database" | "balancer";
+import {
+  cacheDefaults,
+  readCache,
+  writeCache,
+  redisCommand,
+  type CacheSettings,
+  type CacheEntry,
+} from "./cache";
+import {
+  KafkaLab,
+  emptyKafka,
+  kafkaDefaults,
+  producerDefaults,
+  consumerDefaults,
+  type KafkaConfig,
+  type ProducerConfig,
+  type ConsumerConfig,
+  type KafkaSnapshot,
+} from "./kafka";
+import {
+  QueueLab,
+  emptyQueue,
+  queueDefaults,
+  workerDefaults,
+  type QueueConfig,
+  type WorkerConfig,
+  type QueueSnapshot,
+} from "./queue";
+import {
+  DatabaseLab,
+  emptyDatabase,
+  databaseDefaults,
+  GatewayLab,
+  gatewayDefaults,
+  type DatabaseSettings,
+  type DatabaseSnapshot,
+  type GatewaySettings,
+  type GatewaySnapshot,
+} from "./data";
+export type Role =
+  | "client"
+  | "backend"
+  | "cache"
+  | "database"
+  | "balancer"
+  | "producer"
+  | "stream"
+  | "consumer"
+  | "queue"
+  | "worker";
 export type BackendSettings = {
   concurrency: number;
   queueLimit: number;
@@ -25,6 +74,14 @@ export type Transit = {
   request: number;
 };
 export type Config = {
+  cache: CacheSettings;
+  kafka: KafkaConfig;
+  producer: ProducerConfig;
+  consumerOverrides: Record<string, Partial<ConsumerConfig>>;
+  queueSettings: QueueConfig;
+  workerOverrides: Record<string, Partial<WorkerConfig>>;
+  database: DatabaseSettings;
+  gateway: GatewaySettings;
   ttl: number;
   capacity: number;
   eviction: "LRU" | "FIFO";
@@ -42,6 +99,14 @@ export type Config = {
   balancer: { policy: "round-robin" | "least-connections"; online: boolean };
 };
 export const defaults: Config = {
+  cache: { ...cacheDefaults },
+  kafka: { ...kafkaDefaults },
+  producer: { ...producerDefaults },
+  consumerOverrides: {},
+  queueSettings: { ...queueDefaults },
+  workerOverrides: {},
+  database: { ...databaseDefaults },
+  gateway: { ...gatewayDefaults },
   balancer: { policy: "round-robin", online: true },
   ttl: 30,
   capacity: 5,
@@ -70,6 +135,12 @@ export function backendSettings(config: Config, id: string): BackendSettings {
     ...config.backendOverrides?.[id],
   };
 }
+export function consumerSettings(config: Config, id: string): ConsumerConfig {
+  return { ...consumerDefaults, ...config.consumerOverrides?.[id] };
+}
+export function workerSettings(config: Config, id: string): WorkerConfig {
+  return { ...workerDefaults, ...config.workerOverrides?.[id] };
+}
 export function components(config: Config): Component[] {
   return (
     config.components ??
@@ -78,6 +149,11 @@ export function components(config: Config): Component[] {
 }
 export function initialSnapshot(): Snapshot {
   return {
+    kafka: emptyKafka(),
+    queueLab: emptyQueue(),
+    database: emptyDatabase(),
+    gateway: { tokens: 10, allowed: 0, rejected: 0 },
+    cacheLog: [],
     now: 0,
     events: [],
     results: [],
@@ -144,13 +220,12 @@ export type Snapshot = {
   now: number;
   events: Trace[];
   results: Result[];
-  entries: {
-    key: string;
-    value: unknown;
-    expires: number;
-    used: number;
-    created: number;
-  }[];
+  kafka: KafkaSnapshot;
+  queueLab: QueueSnapshot;
+  database: DatabaseSnapshot;
+  gateway: GatewaySnapshot;
+  cacheLog: { id: number; time: number; command: string; reply: string }[];
+  entries: CacheEntry[];
   reads: number;
   hits: number;
   misses: number;
@@ -183,7 +258,62 @@ export class Engine {
   eventId = 1;
   edgeUntil = 0;
   roundRobin = 0;
+  kafka = new KafkaLab((event) => this.labEvent(event.edge, event.reverse));
+  queueLab = new QueueLab((event) => this.labEvent(event.edge, event.reverse));
+  database = new DatabaseLab();
+  gateway = new GatewayLab();
+  labEvent(edge?: string, reverse = false) {
+    if (edge)
+      this.state.transit = [
+        ...this.state.transit,
+        { edge, reverse, request: -1, until: this.state.now + 350 },
+      ].slice(-80);
+  }
+  syncLabs() {
+    this.state.kafka = this.kafka.state;
+    this.state.queueLab = this.queueLab.state;
+    this.state.database = this.database.state;
+    this.state.gateway = this.gateway.state;
+  }
+  produce(count = 1) {
+    let value: unknown = this.config.producer.payload;
+    try {
+      value = JSON.parse(this.config.producer.payload);
+    } catch {
+      /* Plain strings are valid message values. */
+    }
+    if (this.hasRole("stream"))
+      this.kafka.produce(
+        this.config.producer.key,
+        value,
+        count,
+        this.state.now,
+      );
+    if (this.hasRole("queue"))
+      this.queueLab.publish(value, count, this.state.now);
+    this.syncLabs();
+  }
+  cacheCommand(command: string) {
+    if (!this.hasRole("cache")) return;
+    const reply = redisCommand(
+      this.state,
+      command,
+      this.state.now,
+      this.config.cache,
+      this.config.capacity,
+      this.config.eviction,
+    );
+    this.state.cacheLog.push({
+      id: this.eventId++,
+      time: this.state.now,
+      command,
+      reply,
+    });
+    this.state.cacheLog = this.state.cacheLog.slice(-50);
+  }
   constructor() {
+    this.database.configure(this.config.database, this.config.records);
+    this.syncLabs();
     this.refreshBackends();
   }
   configure(config: Config) {
@@ -209,6 +339,29 @@ export class Engine {
         processingDelay: this.limit(settings.processingDelay ?? 0, 0, 60000),
       };
     }
+    const parts = components(this.config);
+    this.kafka.configure(
+      this.config.kafka,
+      this.config.producer,
+      parts
+        .filter((c) => c.role === "consumer" && this.connected("stream", c.id))
+        .map((c) => ({ id: c.id, ...consumerSettings(this.config, c.id) })),
+      this.hasRole("stream"),
+      this.hasRole("producer") && this.connected("producer", "stream"),
+      this.state.now,
+    );
+    this.queueLab.configure(
+      this.config.queueSettings,
+      parts
+        .filter((c) => c.role === "worker" && this.connected("queue", c.id))
+        .map((c) => ({ id: c.id, ...workerSettings(this.config, c.id) })),
+      this.hasRole("queue"),
+      this.hasRole("producer") && this.connected("producer", "queue"),
+      this.state.now,
+    );
+    this.database.configure(this.config.database, this.config.records);
+    this.gateway.configure(this.config.gateway, this.state.now);
+    this.syncLabs();
     this.refreshBackends();
     const removed = this.running.filter(
       (job) => !this.state.backends[job.backendId!],
@@ -371,6 +524,30 @@ export class Engine {
         trace: [],
       };
       this.state.metrics.sent++;
+      job.viaBalancer =
+        this.hasRole("balancer") && this.connected("client", "balancer");
+      if (
+        this.hasRole("balancer") &&
+        this.connected("client", "balancer") &&
+        this.config.balancer.online &&
+        !this.gateway.allow(this.state.now)
+      ) {
+        this.emit(
+          job,
+          "balancer",
+          "Token bucket empty · reject before backend",
+          "error",
+          "client-balancer",
+        );
+        this.record(
+          job,
+          429,
+          { error: "API gateway rate limit exceeded" },
+          "gateway",
+        );
+        this.state.metrics.rejected++;
+        continue;
+      }
       const target = this.chooseBackend();
       if (!target.id) {
         this.record(job, 503, { error: target.error }, "topology");
@@ -491,6 +668,9 @@ export class Engine {
   nextTime() {
     return Math.min(
       this.nextArrival,
+      this.kafka.nextTime(),
+      this.queueLab.nextTime(),
+      this.database.nextTime(),
       ...this.running.map((job) => Math.min(job.due, job.deadline)),
     );
   }
@@ -499,6 +679,21 @@ export class Engine {
     if (!Number.isFinite(next)) return;
     this.state.now = Math.max(this.state.now, next);
     this.expire();
+    if (this.database.nextTime() <= next) {
+      this.database.step(this.state.now);
+      this.syncLabs();
+      return;
+    }
+    if (this.kafka.nextTime() <= next) {
+      this.kafka.step(this.state.now);
+      this.syncLabs();
+      return;
+    }
+    if (this.queueLab.nextTime() <= next) {
+      this.queueLab.step(this.state.now);
+      this.syncLabs();
+      return;
+    }
     const job = [...this.running].sort(
       (a, b) =>
         Math.min(a.due, a.deadline) - Math.min(b.due, b.deadline) ||
@@ -565,31 +760,38 @@ export class Engine {
       j.stage = 1;
       j.due = this.state.now + 120 + settings.processingDelay;
     } else if (j.stage === 1) {
-      if (!this.hasRole("cache") || !connected("cache")) {
+      if (
+        !this.hasRole("cache") ||
+        !connected("cache") ||
+        !this.config.cache.online
+      ) {
         this.emit(j, j.backendId!, "Cache is disconnected. Read database.");
         j.stage = 3;
-        j.due = this.state.now + this.config.delay;
+        j.due = this.state.now + this.database.delay(this.config.delay);
         return;
       }
       this.emit(j, "cache", `Lookup ${j.key}`, "info", `${j.backendId}-cache`);
       j.stage = 2;
       j.due = this.state.now + 100;
     } else if (j.stage === 2) {
-      if (!this.hasRole("cache") || !connected("cache")) {
+      if (
+        !this.hasRole("cache") ||
+        !connected("cache") ||
+        !this.config.cache.online
+      ) {
         this.emit(
           j,
           j.backendId!,
           "Cache disconnected during lookup. Read database.",
         );
         j.stage = 3;
-        j.due = this.state.now + this.config.delay;
+        j.due = this.state.now + this.database.delay(this.config.delay);
         return;
       }
-      const entry = this.state.entries.find((e) => e.key === j.key);
+      const entry = readCache(this.state, j.key, this.state.now);
       if (entry) {
         j.body = structuredClone(entry.value);
-        this.state.hits++;
-        entry.used = this.state.now;
+
         this.emit(
           j,
           "cache",
@@ -601,7 +803,6 @@ export class Engine {
         j.stage = 5;
         j.due = this.state.now + 160;
       } else {
-        this.state.misses++;
         this.emit(
           j,
           "cache",
@@ -611,7 +812,7 @@ export class Engine {
           true,
         );
         j.stage = 3;
-        j.due = this.state.now + this.config.delay;
+        j.due = this.state.now + this.database.delay(this.config.delay);
       }
     } else if (j.stage === 3) {
       if (
@@ -652,7 +853,13 @@ export class Engine {
         );
         return;
       }
-      const value = this.config.records[j.path.split("/").pop()!];
+      const read = this.database.read(j.path.split("/").pop()!, this.state.now);
+      this.emit(j, "database", this.database.state.reply);
+      if (read.error) {
+        this.finish(429, { error: read.error }, "database");
+        return;
+      }
+      const value = read.value;
       if (!value) {
         this.finish(404, { error: "User not found" }, "database");
         return;
@@ -670,34 +877,28 @@ export class Engine {
       j.due = this.state.now + 120;
     } else if (j.stage === 7) {
       const value = j.body;
-      if (this.hasRole("cache") && connected("cache")) {
-        this.state.entries = this.state.entries.filter(
-          (entry) => entry.key !== j.key,
-        );
-        const evicted: string[] = [];
-        while (this.state.entries.length >= this.config.capacity) {
-          const order = this.config.eviction === "LRU" ? "used" : "created";
-          this.state.entries.sort((a, b) => a[order] - b[order]);
-          evicted.push(this.state.entries.shift()!.key);
-        }
-        if (evicted.length)
-          this.emit(
-            j,
-            "cache",
-            `Evicted ${evicted.length === 1 ? evicted[0] : `${evicted.length} entries`} · ${this.config.eviction}`,
-          );
-        this.state.entries.push({
-          key: j.key,
+      if (
+        this.hasRole("cache") &&
+        connected("cache") &&
+        this.config.cache.online
+      ) {
+        const result = writeCache(
+          this.state,
+          j.key,
           value,
-          expires: this.state.now + this.config.ttl * 1000,
-          used: this.state.now,
-          created: this.state.now,
-        });
+          this.config.ttl * 1000,
+          this.state.now,
+          this.config.cache,
+          this.config.capacity,
+          this.config.eviction,
+        );
+        for (const key of result.evicted)
+          this.emit(j, "cache", `Evicted ${key}`);
         this.emit(
           j,
           "cache",
-          `Stored ${j.key} · expires in ${this.config.ttl}s`,
-          "info",
+          result.error ?? `Stored ${j.key} · expires in ${this.config.ttl}s`,
+          result.error ? "error" : "info",
           `${j.backendId}-cache`,
         );
       }
@@ -726,6 +927,8 @@ export class Engine {
     while (this.nextTime() <= target) this.step();
     this.state.now = Math.max(target, this.state.now);
     this.expire();
+    this.gateway.refill(this.state.now);
+    this.syncLabs();
     if (!this.running.length && this.state.now >= this.edgeUntil) {
       this.state.edge = undefined;
       this.state.reverse = false;

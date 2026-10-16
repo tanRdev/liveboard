@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -58,11 +58,42 @@ import {
   serializeBoard,
   parseBoard,
   type Board,
+  type Scenario,
 } from "./board";
 import { icons } from "./visuals";
+import { technology } from "./settings";
+const LabPanel = lazy(() => import("./LabPanel"));
 import Inspector from "./Inspector";
 const edgeTypes = { traffic: TrafficEdge };
 const nodeTypes = { component: ComponentNode };
+function boardPrompt(nodes: Node[], config: Config): [string, string] {
+  if (nodes.some((n) => n.data.role === "stream"))
+    return [
+      "KAFKA EVENT STREAM",
+      "What happens when a consumer stops before committing?",
+    ];
+  if (nodes.some((n) => n.data.role === "queue"))
+    return [
+      "MESSAGE DELIVERY",
+      "What happens when a worker fails before acknowledgment?",
+    ];
+  if (nodes.some((n) => n.data.role === "balancer"))
+    return config.gateway.technology === "api-gateway"
+      ? ["API GATEWAY", "How much traffic can the token bucket admit?"]
+      : ["LOAD BALANCING", "What happens when one backend goes offline?"];
+  if (
+    nodes.some((n) => n.data.role === "database") &&
+    !nodes.some((n) => n.data.role === "cache")
+  )
+    return [
+      "DATABASE CONSISTENCY",
+      "When does a replica show a committed write?",
+    ];
+  return [
+    "CACHE-ASIDE PATTERN",
+    "What happens when the same request arrives twice?",
+  ];
+}
 function App() {
   const [saved] = useState(() => {
     try {
@@ -160,6 +191,13 @@ function App() {
     config,
     title,
   });
+  const hasClient = nodes.some((n) => n.data.role === "client");
+  const executionTab = hasClient ? tab : "Technology lab";
+  const busy =
+    state.active ||
+    state.kafka.active > 0 ||
+    state.queueLab.inProgress.length > 0;
+  const prompt = boardPrompt(nodes, config);
   const result =
     state.results.find((r) => r.id === requestId) || state.results[0];
   const traceRequest =
@@ -190,12 +228,12 @@ function App() {
   };
   const add = (role: Role) => {
     let id: string = role;
-    if (role === "backend") {
-      const available = ["backend", "backend-2", "backend-3", "backend-4"].find(
+    if (["backend", "consumer", "worker"].includes(role)) {
+      const available = [role, `${role}-2`, `${role}-3`, `${role}-4`].find(
         (id) => !nodes.some((n) => n.id === id),
       );
       if (!available) {
-        setToast("This board already has four backend instances.");
+        setToast(`This board already has four ${role} instances.`);
         return;
       }
       id = available;
@@ -204,8 +242,8 @@ function App() {
       return;
     }
     const node = createNode(role, id);
-    if (role === "backend" && id !== "backend") {
-      const existing = nodes.filter((node) => node.data.role === "backend");
+    if (["backend", "consumer", "worker"].includes(role) && id !== role) {
+      const existing = nodes.filter((node) => node.data.role === role);
       node.position = {
         x: existing[0]?.position.x ?? node.position.x,
         y: Math.max(...existing.map((node) => node.position.y)) + 210,
@@ -213,6 +251,11 @@ function App() {
     }
     setNodes((ns) => [...ns, node]);
     setSelection(id);
+    if (role === "cache")
+      setConfig((current) => ({
+        ...current,
+        cache: { ...current.cache, technology: "redis" },
+      }));
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         void flow.current?.fitView({ padding: 0.15 });
@@ -242,8 +285,16 @@ function App() {
       }),
     );
   };
-  const resetBoard = (kind: "cache" | "balanced" | "empty") => {
+  const resetBoard = (kind: Scenario) => {
     loadBoard(scenario(kind));
+    const focus: Partial<Record<Scenario, string>> = {
+      redis: "cache",
+      kafka: "stream",
+      queue: "queue",
+      database: "database",
+      gateway: "balancer",
+    };
+    if (focus[kind]) setSelection(focus[kind]!);
     setToast(
       kind === "empty"
         ? "Empty board ready. Add components from the library."
@@ -293,6 +344,7 @@ function App() {
     selected: n.id === selection,
     data: {
       ...n.data,
+      tech: technology(n.data.role as Role, config),
       state,
       config,
       active: state.active && state.events.at(-1)?.component === n.id,
@@ -409,47 +461,47 @@ function App() {
             />
             <kbd>/</kbd>
           </div>
-          {["APPLICATION", "DATA & STORAGE", "TRAFFIC CONTROL"].map(
-            (category) => (
-              <section className="catalog-section" key={category}>
-                <h3>{category}</h3>
-                {catalog
-                  .filter(
-                    (c) =>
-                      c.category === category &&
-                      `${c.name} ${c.description}`
-                        .toLowerCase()
-                        .includes(search.toLowerCase()),
-                  )
-                  .map((c) => {
-                    const Icon = icons[c.role];
-                    return (
-                      <button
-                        className="catalog-item"
-                        key={c.role}
-                        onClick={() => add(c.role)}
-                        draggable
-                        onDragStart={(e) =>
-                          e.dataTransfer.setData(
-                            "application/liveboard",
-                            c.role,
-                          )
-                        }
-                      >
-                        <span className={`catalog-icon ${c.role}`}>
-                          <Icon size={19} strokeWidth={1.6} />
-                        </span>
-                        <span>
-                          <strong>{c.name}</strong>
-                          <small>{c.description}</small>
-                        </span>
-                        <Plus size={14} className="catalog-plus" />
-                      </button>
-                    );
-                  })}
-              </section>
-            ),
-          )}
+          {[
+            "APPLICATION",
+            "DATA & STORAGE",
+            "MESSAGING",
+            "TRAFFIC CONTROL",
+          ].map((category) => (
+            <section className="catalog-section" key={category}>
+              <h3>{category}</h3>
+              {catalog
+                .filter(
+                  (c) =>
+                    c.category === category &&
+                    `${c.name} ${c.description} ${c.tech}`
+                      .toLowerCase()
+                      .includes(search.toLowerCase()),
+                )
+                .map((c) => {
+                  const Icon = icons[c.role];
+                  return (
+                    <button
+                      className="catalog-item"
+                      key={c.role}
+                      onClick={() => add(c.role)}
+                      draggable
+                      onDragStart={(e) =>
+                        e.dataTransfer.setData("application/liveboard", c.role)
+                      }
+                    >
+                      <span className={`catalog-icon ${c.role}`}>
+                        <Icon size={19} strokeWidth={1.6} />
+                      </span>
+                      <span>
+                        <strong>{c.name}</strong>
+                        <small>{c.description}</small>
+                      </span>
+                      <Plus size={14} className="catalog-plus" />
+                    </button>
+                  );
+                })}
+            </section>
+          ))}
           <div className="library-foot">
             <div className="coming">
               <Box size={16} />
@@ -476,6 +528,26 @@ function App() {
             <button onClick={() => resetBoard("balanced")}>
               Load balanced system <ArrowUpRight size={15} />
             </button>
+            {(
+              [
+                ["redis", "Redis memory lab"],
+                ["kafka", "Kafka replay lab"],
+                ["queue", "Queue delivery lab"],
+                ["database", "Database consistency lab"],
+                ["gateway", "API gateway lab"],
+              ] as const
+            ).map(([kind, label]) => (
+              <button
+                key={kind}
+                onClick={() => {
+                  resetBoard(kind);
+                  setTab("Technology lab");
+                }}
+              >
+                {label}
+                <ArrowUpRight size={15} />
+              </button>
+            ))}
           </div>
         </aside>
         <main className="center">
@@ -517,16 +589,10 @@ function App() {
             <div className="canvas-info">
               <span className="scenario-label">
                 <span className="tiny-dot" />
-                {nodes.some((n) => n.data.role === "balancer")
-                  ? "LOAD BALANCING"
-                  : "CACHE-ASIDE PATTERN"}
+                {prompt[0]}
               </span>
               <h1>Good systems start with a question.</h1>
-              <p>
-                {nodes.some((n) => n.data.role === "balancer")
-                  ? "What happens when one backend goes offline?"
-                  : "What happens when the same request arrives twice?"}
-              </p>
+              <p>{prompt[1]}</p>
             </div>
             <ReactFlow
               nodes={renderedNodes}
@@ -606,16 +672,14 @@ function App() {
             </div>
           </div>
           <section
-            className={`execution ${tab === "Traffic" ? "expanded" : ""}`}
+            className={`execution ${["Traffic", "Technology lab"].includes(executionTab) ? "expanded" : ""}`}
           >
             <div className="execution-heading">
               <div>
-                <span
-                  className={`live-indicator ${state.active ? "busy" : ""}`}
-                />
+                <span className={`live-indicator ${busy ? "busy" : ""}`} />
                 <h2>Execution</h2>
                 <span className="execution-status">
-                  {state.active ? "Running" : "Ready to explore"}
+                  {busy ? "Running" : "Ready to explore"}
                 </span>
               </div>
               <div className="playback">
@@ -670,65 +734,108 @@ function App() {
                 </button>
               </div>
             </div>
-            <div className="request-bar">
-              <span className="method">
-                GET <ChevronDown size={11} />
-              </span>
-              <input
-                aria-label="Request path"
-                value={path}
-                onChange={(e) => setPath(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
+            {hasClient ? (
+              <div className="request-bar">
+                <span className="method">
+                  GET <ChevronDown size={11} />
+                </span>
+                <input
+                  aria-label="Request path"
+                  value={path}
+                  onChange={(e) => setPath(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      message("send", { path, count: traffic });
+                      setRequestId(null);
+                    }
+                  }}
+                />
+                <select
+                  aria-label="Traffic volume"
+                  value={traffic}
+                  onChange={(e) => setTraffic(+e.target.value)}
+                >
+                  <option value="1">Single request</option>
+                  <option value="10">Burst · 10 requests</option>
+                  <option value="50">Burst · 50 requests</option>
+                </select>
+                <button
+                  className="send-button"
+                  onClick={() => {
                     message("send", { path, count: traffic });
                     setRequestId(null);
-                  }
-                }}
-              />
-              <select
-                aria-label="Traffic volume"
-                value={traffic}
-                onChange={(e) => setTraffic(+e.target.value)}
-              >
-                <option value="1">Single request</option>
-                <option value="10">Burst · 10 requests</option>
-                <option value="50">Burst · 50 requests</option>
-              </select>
-              <button
-                className="send-button"
-                onClick={() => {
-                  message("send", { path, count: traffic });
-                  setRequestId(null);
-                }}
-              >
-                <Play size={13} fill="currentColor" /> Send request
-              </button>
-            </div>
-            <div className="execution-tabs">
-              {["Requests", "Event log", "Response", "Traffic"].map((t) => (
-                <button
-                  key={t}
-                  className={tab === t ? "active" : ""}
-                  onClick={() => setTab(t)}
+                  }}
                 >
-                  {t}
-                  {t === "Requests" && <span>{state.metrics.completed}</span>}
-                  {t === "Traffic" && state.traffic.running && (
-                    <span className="traffic-running-dot" />
-                  )}
+                  <Play size={13} fill="currentColor" /> Send request
                 </button>
-              ))}
-              <span className="request-stats">
-                {state.queue > 0 && <b>{state.queue} queued · </b>}
-                {state.reads} database reads <span>·</span>{" "}
-                {state.hits + state.misses
-                  ? Math.round((state.hits / (state.hits + state.misses)) * 100)
-                  : 0}
-                % cache hit rate
-              </span>
+              </div>
+            ) : (
+              <div className="message-bar">
+                <span>Send an event to connected streams and queues</span>
+                <button onClick={() => message("produce", { count: 1 })}>
+                  Produce 1
+                </button>
+                <button onClick={() => message("produce", { count: 10 })}>
+                  Produce 10
+                </button>
+                <button onClick={() => setSelection("producer")}>
+                  Producer settings
+                </button>
+              </div>
+            )}
+            <div className="execution-tabs">
+              {[
+                "Requests",
+                "Event log",
+                "Response",
+                "Traffic",
+                "Technology lab",
+              ]
+                .filter((t) => hasClient || t === "Technology lab")
+                .map((t) => (
+                  <button
+                    key={t}
+                    className={executionTab === t ? "active" : ""}
+                    onClick={() => setTab(t)}
+                  >
+                    {t}
+                    {t === "Requests" && <span>{state.metrics.completed}</span>}
+                    {t === "Traffic" && state.traffic.running && (
+                      <span className="traffic-running-dot" />
+                    )}
+                  </button>
+                ))}
+              {hasClient && (
+                <span className="request-stats">
+                  {state.queue > 0 && <b>{state.queue} queued · </b>}
+                  {state.reads} database reads <span>·</span>{" "}
+                  {state.hits + state.misses
+                    ? Math.round(
+                        (state.hits / (state.hits + state.misses)) * 100,
+                      )
+                    : 0}
+                  % cache hit rate
+                </span>
+              )}
             </div>
             <div className="execution-body">
-              {tab === "Traffic" && (
+              {executionTab === "Technology lab" && (
+                <Suspense
+                  fallback={
+                    <p className="lab-empty">Loading technology lab…</p>
+                  }
+                >
+                  <LabPanel
+                    key={title}
+                    config={config}
+                    state={state}
+                    nodes={nodes}
+                    onMessage={message}
+                    onSelect={setSelection}
+                  />
+                </Suspense>
+              )}
+              {executionTab === "Traffic" && (
                 <TrafficPanel
                   state={state}
                   path={path}
@@ -749,7 +856,7 @@ function App() {
                   }
                 />
               )}
-              {tab === "Requests" && (
+              {executionTab === "Requests" && (
                 <>
                   {!state.results.length ? (
                     <div className="execution-empty">
@@ -813,7 +920,7 @@ function App() {
                   )}
                 </>
               )}
-              {tab === "Event log" && (
+              {executionTab === "Event log" && (
                 <div className="event-log">
                   {events.length > 0 && (
                     <div className="trace-summary">
@@ -842,7 +949,7 @@ function App() {
                   ))}
                 </div>
               )}
-              {tab === "Response" && (
+              {executionTab === "Response" && (
                 <div className="response-view">
                   {result ? (
                     <>
@@ -887,7 +994,16 @@ function App() {
             setConfig((current) => {
               const backendOverrides = { ...current.backendOverrides };
               delete backendOverrides[selection];
-              return { ...current, backendOverrides };
+              const consumerOverrides = { ...current.consumerOverrides },
+                workerOverrides = { ...current.workerOverrides };
+              delete consumerOverrides[selection];
+              delete workerOverrides[selection];
+              return {
+                ...current,
+                backendOverrides,
+                consumerOverrides,
+                workerOverrides,
+              };
             });
             setNodes((ns) => ns.filter((n) => n.id !== selection));
             setEdges((es) =>
@@ -952,7 +1068,10 @@ function App() {
         </ol>
         <p>
           Pause and step through each decision. Use New board to assemble the
-          scenario yourself.
+          scenario yourself. Load a technology lab to configure Redis, Kafka,
+          RabbitMQ, SQS, database reads, or an API gateway. Select a component
+          to change its technology and controls. Produce events in streaming
+          scenarios. Inspect offsets, messages, and decisions in Technology lab.
         </p>
         <button className="save-button" onClick={() => setHelp(false)}>
           Start exploring <ArrowRight size={14} />

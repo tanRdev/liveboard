@@ -18,11 +18,13 @@ import {
 } from "lucide-react";
 import {
   backendSettings,
+  consumerSettings,
   type BackendSettings,
   type Config,
   type Role,
   type Snapshot,
 } from "./engine";
+import TechnologyInspector from "./TechnologyInspector";
 import { catalog } from "./board";
 import { icons } from "./visuals";
 type Props = {
@@ -121,6 +123,88 @@ function Availability({
     </Field>
   );
 }
+function liveMetrics(
+  role: Role | undefined,
+  id: string,
+  state: Snapshot,
+  config: Config,
+): [string, number][] {
+  switch (role) {
+    case "database":
+      return [
+        ["Reads", state.database.reads],
+        ["Records", Object.keys(state.database.primary).length],
+      ];
+    case "backend":
+      return [
+        ["Completed", state.backends[id]?.completed ?? 0],
+        ["Waiting", state.backends[id]?.queued ?? 0],
+      ];
+    case "producer":
+      return [
+        ["Produced", state.kafka.produced + state.queueLab.published],
+        ["Rejected", state.kafka.rejected + state.queueLab.rejected],
+      ];
+    case "stream":
+      return [
+        [
+          "Retained",
+          state.kafka.partitions.reduce((sum, p) => sum + p.records.length, 0),
+        ],
+        ["Replays", state.kafka.duplicates],
+      ];
+    case "consumer":
+      return [
+        [
+          "Recent deliveries",
+          state.kafka.deliveries.filter((d) => d.consumer === id).length,
+        ],
+        [
+          "Partitions",
+          state.kafka.groups
+            .find((g) => g.id === consumerSettings(config, id).groupId)
+            ?.owners.filter((owner) => owner === id).length ?? 0,
+        ],
+      ];
+    case "queue":
+      return [
+        [
+          "Ready",
+          state.queueLab.messages.filter((m) => m.state === "ready").length,
+        ],
+        [
+          "Dead letters",
+          state.queueLab.messages.filter((m) => m.state === "dead").length,
+        ],
+      ];
+    case "worker":
+      return [
+        [
+          "In flight",
+          state.queueLab.inProgress.filter((job) => job.worker === id).length +
+            state.queueLab.messages.filter(
+              (m) => m.worker === id && m.state === "unacked",
+            ).length,
+        ],
+        [
+          "Recent effects",
+          state.queueLab.events.filter(
+            (e) => e.edge === `queue-${id}` && e.text.includes("Processed"),
+          ).length,
+        ],
+      ];
+    case "balancer":
+      if (config.gateway.technology === "api-gateway")
+        return [
+          ["Admitted", state.gateway.allowed],
+          ["Rate limited", state.gateway.rejected],
+        ];
+  }
+  return [
+    ["Responses", state.metrics.completed],
+    ["Failed", state.metrics.failed],
+  ];
+}
 export default function Inspector({
   node,
   nodes,
@@ -141,7 +225,7 @@ export default function Inspector({
   const item = catalog.find((item) => item.role === role);
   const Icon = role ? icons[role] : SlidersHorizontal;
   const settings = backendSettings(config, node?.id ?? "backend");
-  const stats = node ? state.backends[node.id] : undefined;
+
   const update = (patch: Partial<Config>) =>
     onConfig((current) => ({ ...current, ...patch }));
   const updateBackend = (patch: Partial<BackendSettings>) =>
@@ -236,25 +320,13 @@ export default function Inspector({
                 onChange={(e) => onRename(e.target.value)}
               />
             </Field>
-            <div className="field-label">
-              TECHNOLOGY <span className="subtle-badge">Preset</span>
-            </div>
-            <div className="technology-field">
-              <Icon size={15} />
-              {item.tech}
-              <Check size={13} />
-            </div>
-            <p className="field-help">
-              {role === "balancer"
-                ? "HTTP routing to connected, healthy backend instances."
-                : role === "cache"
-                  ? "In-memory key-value storage with expiry and eviction."
-                  : role === "database"
-                    ? "Seeded records with key lookup and modeled read delay."
-                    : role === "backend"
-                      ? "One independently configured service instance."
-                      : "Sends HTTP requests and receives responses."}
-            </p>
+            <TechnologyInspector
+              role={role!}
+              id={node.id}
+              config={config}
+              state={state}
+              onConfig={onConfig}
+            />
             <div className="section-divider" />
             {role === "backend" && (
               <>
@@ -408,7 +480,7 @@ export default function Inspector({
                 </div>
               </>
             )}
-            {role === "cache" && (
+            {role === "cache" && config.cache.technology === "generic" && (
               <>
                 <h3 className="inspector-subtitle">Cache behavior</h3>
                 <NumberField
@@ -552,7 +624,11 @@ export default function Inspector({
                     <span>Entries</span>
                     <b>
                       {state.entries.length}
-                      <small> / {config.capacity}</small>
+                      <small>
+                        {config.cache.technology === "generic"
+                          ? ` / ${config.capacity}`
+                          : " keys"}
+                      </small>
                     </b>
                   </div>
                   <div>
@@ -574,11 +650,9 @@ export default function Inspector({
                         <summary>
                           <code>{entry.key}</code>
                           <span>
-                            {Math.max(
-                              0,
-                              Math.ceil((entry.expires - state.now) / 1000),
-                            )}
-                            s
+                            {Number.isFinite(entry.expires)
+                              ? `${Math.max(0, Math.ceil((entry.expires - state.now) / 1000))}s`
+                              : "Persistent"}
                           </span>
                         </summary>
                         <pre>{JSON.stringify(entry.value, null, 2)}</pre>
@@ -609,38 +683,14 @@ export default function Inspector({
               </>
             ) : (
               <div className="state-metrics">
-                <div>
-                  <span>
-                    {role === "database"
-                      ? "Reads"
-                      : role === "backend"
-                        ? "Completed"
-                        : "Responses"}
-                  </span>
-                  <b>
-                    {role === "database"
-                      ? state.reads
-                      : role === "backend"
-                        ? (stats?.completed ?? 0)
-                        : state.metrics.completed}
-                  </b>
-                </div>
-                <div>
-                  <span>
-                    {role === "database"
-                      ? "Records"
-                      : role === "backend"
-                        ? "Waiting"
-                        : "Failed"}
-                  </span>
-                  <b>
-                    {role === "database"
-                      ? Object.keys(config.records).length
-                      : role === "backend"
-                        ? (stats?.queued ?? 0)
-                        : state.metrics.failed}
-                  </b>
-                </div>
+                {liveMetrics(role, node.id, state, config).map(
+                  ([label, value]) => (
+                    <div key={label}>
+                      <span>{label}</span>
+                      <b>{value}</b>
+                    </div>
+                  ),
+                )}
               </div>
             )}
           </div>

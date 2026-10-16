@@ -1,4 +1,5 @@
 import { MarkerType, type Node, type Edge } from "@xyflow/react";
+import { parseSettings } from "./settings";
 import { defaults, type Config, type Role } from "./engine";
 export const catalog: {
   role: Role;
@@ -24,26 +25,66 @@ export const catalog: {
   {
     role: "cache",
     name: "Cache",
-    description: "Fast access. Fewer reads.",
+    description: "Redis · Memcached · TTL & eviction",
     category: "DATA & STORAGE",
     tech: "Key-value cache",
   },
   {
     role: "database",
     name: "Database",
-    description: "A source of truth for your data",
+    description: "PostgreSQL · MongoDB · DynamoDB",
     category: "DATA & STORAGE",
     tech: "Relational database",
   },
   {
     role: "balancer",
     name: "Load balancer",
-    description: "Distribute traffic. Stay available.",
+    description: "Load balancing · API gateway limits",
     category: "TRAFFIC CONTROL",
     tech: "HTTP load balancer",
   },
+  {
+    role: "producer",
+    name: "Event producer",
+    description: "Message keys, payloads & acknowledgments",
+    category: "MESSAGING",
+    tech: "Event producer",
+  },
+  {
+    role: "stream",
+    name: "Event stream",
+    description: "Kafka · partitions, retention & ISR",
+    category: "MESSAGING",
+    tech: "Apache Kafka",
+  },
+  {
+    role: "consumer",
+    name: "Stream consumer",
+    description: "Groups, offsets, commits & replay",
+    category: "MESSAGING",
+    tech: "Kafka consumer",
+  },
+  {
+    role: "queue",
+    name: "Message queue",
+    description: "RabbitMQ · SQS · redelivery & DLQ",
+    category: "MESSAGING",
+    tech: "RabbitMQ quorum queue",
+  },
+  {
+    role: "worker",
+    name: "Queue worker",
+    description: "Prefetch, acknowledgments & failures",
+    category: "MESSAGING",
+    tech: "Message worker",
+  },
 ];
 export const positions: Record<Role, { x: number; y: number }> = {
+  producer: { x: 30, y: 200 },
+  stream: { x: 360, y: 200 },
+  consumer: { x: 710, y: 100 },
+  queue: { x: 360, y: 200 },
+  worker: { x: 710, y: 200 },
   client: { x: 40, y: 215 },
   backend: { x: 355, y: 215 },
   cache: { x: 705, y: 65 },
@@ -63,8 +104,8 @@ export function createNode(
     data: {
       ...item,
       name:
-        role === "backend" && id !== "backend"
-          ? `Backend ${id.split("-").at(-1)}`
+        ["backend", "consumer", "worker"].includes(role) && id !== role
+          ? `${item.name} ${id.split("-").at(-1)}`
           : item.name,
     },
   };
@@ -76,11 +117,19 @@ export function createEdge(source: string, target: string): Edge {
     target,
     type: "traffic",
     label:
-      target === "cache"
-        ? "GET / SET"
-        : target === "database"
-          ? "QUERY"
-          : "HTTP",
+      target === "stream"
+        ? "PRODUCE"
+        : target === "queue"
+          ? "PUBLISH"
+          : source === "stream"
+            ? "FETCH"
+            : source === "queue"
+              ? "DELIVER"
+              : target === "cache"
+                ? "GET / SET"
+                : target === "database"
+                  ? "QUERY"
+                  : "HTTP",
     markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
   };
 }
@@ -91,7 +140,16 @@ export type Board = {
   edges: Edge[];
   config: Config;
 };
-export function scenario(kind: "cache" | "balanced" | "empty"): Board {
+export type Scenario =
+  | "cache"
+  | "balanced"
+  | "empty"
+  | "redis"
+  | "kafka"
+  | "queue"
+  | "database"
+  | "gateway";
+function buildScenario(kind: Scenario): Board {
   const config = structuredClone(defaults);
   if (kind === "empty")
     return {
@@ -101,17 +159,64 @@ export function scenario(kind: "cache" | "balanced" | "empty"): Board {
       edges: [],
       config,
     };
-  if (kind === "cache")
+  if (kind === "kafka" || kind === "queue") {
+    const stream = kind === "kafka";
+    const middle = stream ? "stream" : "queue";
+    const end = stream ? "consumer" : "worker";
     return {
       version: 1,
-      title: "User profile API",
+      title: stream
+        ? "Kafka · partitions & replay"
+        : "Queue · retries & dead letters",
+      config,
+      nodes: [
+        createNode("producer"),
+        createNode(middle),
+        createNode(end),
+        ...(stream
+          ? [createNode("consumer", "consumer-2", { x: 710, y: 395 })]
+          : []),
+      ],
+      edges: [
+        createEdge("producer", middle),
+        createEdge(middle, end),
+        ...(stream ? [createEdge("stream", "consumer-2")] : []),
+      ],
+    };
+  }
+  if (kind === "redis") {
+    config.cache.technology = "redis";
+    config.cache.maxmemory = 512;
+  }
+  if (kind === "database") {
+    config.database.technology = "postgresql";
+    config.database.readFrom = "replica";
+  }
+  if (kind === "gateway") {
+    config.gateway.technology = "api-gateway";
+    config.gateway.burst = 5;
+    config.gateway.rate = 2;
+  }
+  if (["cache", "redis", "database"].includes(kind))
+    return {
+      version: 1,
+      title:
+        kind === "redis"
+          ? "Redis · cache-aside & memory"
+          : kind === "database"
+            ? "Database · primary & replica"
+            : "User profile API",
       config,
       nodes: catalog
-        .filter((item) => item.role !== "balancer")
+        .filter(
+          (item) =>
+            ["client", "backend", "cache", "database"].includes(item.role) &&
+            !(kind === "database" && item.role === "cache"),
+        )
         .map((item) => createNode(item.role)),
       edges: [
         createEdge("client", "backend"),
-        createEdge("backend", "cache"),
+        ...(kind === "database" ? [] : [createEdge("backend", "cache")]),
         createEdge("backend", "database"),
       ],
     };
@@ -120,7 +225,8 @@ export function scenario(kind: "cache" | "balanced" | "empty"): Board {
   };
   return {
     version: 1,
-    title: "Scale & survive",
+    title:
+      kind === "gateway" ? "API gateway · throttle & route" : "Scale & survive",
     config,
     nodes: [
       createNode("client", "client", { x: 0, y: 235 }),
@@ -142,6 +248,17 @@ export function scenario(kind: "cache" | "balanced" | "empty"): Board {
       ]),
     ],
   };
+}
+export function scenario(kind: Scenario): Board {
+  const board = buildScenario(kind);
+  board.config.components = board.nodes.map((n) => ({
+    id: n.id,
+    role: n.data.role as Role,
+    name: String(n.data.name),
+  }));
+  board.config.roles = board.nodes.map((n) => n.data.role as Role);
+  board.config.links = board.edges.map((e) => e.id);
+  return board;
 }
 export function serializeBoard(board: Board): string {
   return JSON.stringify(
@@ -174,7 +291,7 @@ export function parseBoard(text: string): Board {
     !object(value.config)
   )
     throw new Error("Choose a Liveboard JSON file with version 1.");
-  if (value.nodes.length > 8 || value.edges.length > 24)
+  if (value.nodes.length > 19 || value.edges.length > 48)
     throw new Error(
       "Boards support four backend instances and one of each other component.",
     );
@@ -191,7 +308,9 @@ export function parseBoard(text: string): Board {
     const role = n.data.role as Role;
     if (
       !catalog.some((c) => c.role === role) ||
-      !(role === "backend" ? /^backend(?:-[2-4])?$/.test(n.id) : n.id === role)
+      !(["backend", "consumer", "worker"].includes(role)
+        ? new RegExp(`^${role}(?:-[2-4])?$`).test(n.id)
+        : n.id === role)
     )
       throw new Error("The board contains an unsupported component.");
     if (
@@ -342,6 +461,7 @@ export function parseBoard(text: string): Board {
       config.backendOverrides[id] = valid;
     }
   }
+  parseSettings(raw, config);
   config.components = nodes.map((n) => ({
     id: n.id,
     role: n.data.role as Role,
@@ -363,8 +483,12 @@ export function parseBoard(text: string): Board {
 export function canConnect(source: Node, target: Node): boolean {
   return (
     source.id !== target.id &&
-    ((source.data.role === "client" &&
-      ["backend", "balancer"].includes(String(target.data.role))) ||
+    ((source.data.role === "producer" &&
+      ["stream", "queue"].includes(String(target.data.role))) ||
+      (source.data.role === "stream" && target.data.role === "consumer") ||
+      (source.data.role === "queue" && target.data.role === "worker") ||
+      (source.data.role === "client" &&
+        ["backend", "balancer"].includes(String(target.data.role))) ||
       (source.data.role === "balancer" && target.data.role === "backend") ||
       (source.data.role === "backend" &&
         ["cache", "database"].includes(String(target.data.role))))
