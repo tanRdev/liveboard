@@ -1,0 +1,444 @@
+/* Interview workspace and failure experiments. */
+.interview-selected {
+  color: #3d7548 !important;
+  background: #edf3e7;
+}
+.execution.interview-expanded {
+  height: 530px;
+  max-height: 65vh;
+  flex-shrink: 0;
+}
+.interview-panel {
+  height: 100%;
+  overflow: auto;
+  background: #fbfcf8;
+  font-size: 12px;
+  color: #4b5845;
+}
+.interview-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  padding: 15px 16px 10px;
+}
+.interview-heading > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.interview-heading b {
+  font-size: 14px;
+}
+.interview-heading span {
+  font-size: 10px;
+  color: #8b967f;
+}
+.interview-clock {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.interview-clock strong {
+  font: 18px var(--mono);
+  color: #6d875e;
+}
+.interview-clock.expired strong {
+  color: #b5694f;
+}
+.interview-clock button,
+.interview-tabs button {
+  border: 1px solid #dce4d3;
+  background: white;
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-size: 10px;
+  color: #647d56;
+  cursor: pointer;
+}
+.interview-clock button:disabled {
+  opacity: 0.5;
+}
+.interview-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 5px 16px 12px;
+  border-bottom: 1px solid #e2e8db;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fbfcf8;
+}
+.interview-tabs button.active {
+  background: #e9f0e1;
+  border-color: #b2c5a2;
+  color: #3d683e;
+}
+.interview-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.interview-columns > section {
+  padding: 14px 16px;
+  min-width: 0;
+}
+.interview-columns > section + section {
+  border-left: 1px solid #e3e9dd;
+}
+.interview-columns h3 {
+  font-size: 12px;
+  margin: 1px 0 10px;
+}
+.interview-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #7a876e;
+  margin: 0 0 13px;
+}
+.interview-field input,
+.interview-field textarea {
+  border: 1px solid #dce4d3;
+  border-radius: 5px;
+  padding: 9px;
+  font: 11px/1.6 var(--font);
+  color: #4b5e42;
+  background: white;
+  resize: vertical;
+  min-width: 0;
+  width: 100%;
+}
+.interview-field textarea {
+  min-height: 80px;
+}
+.brief-presets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-bottom: 15px;
+}
+.brief-presets button {
+  padding: 10px;
+  border: 1px solid #d9e4ce;
+  border-radius: 5px;
+  background: #f1f6ea;
+  text-align: left;
+  color: #566f46;
+  font-size: 10px;
+  cursor: pointer;
+}
+.brief-presets span {
+  display: block;
+  font-size: 8px;
+  color: #95a286;
+  margin-top: 5px;
+}
+.target-fields,
+.capacity-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 12px;
+}
+.target-fields .lab-field,
+.capacity-fields .lab-field {
+  margin: 5px 0 10px;
+}
+.target-fields .lab-field:last-child {
+  grid-column: 1/-1;
+}
+.interview-checklist {
+  display: grid;
+  gap: 9px;
+  margin: 16px 0;
+}
+.interview-checklist label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+}
+.interview-checklist input {
+  accent-color: #6d8e5c;
+}
+.capacity-results {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+}
+.capacity-results > div {
+  border: 1px solid #dfe8d5;
+  border-radius: 5px;
+  background: #f2f6eb;
+  padding: 11px;
+}
+.capacity-results span {
+  display: block;
+  font-size: 9px;
+  color: #8b987c;
+}
+.capacity-results b {
+  display: block;
+  margin-top: 7px;
+  font-size: 17px;
+  color: #698451;
+}
+.capacity-formulas {
+  font-size: 10px;
+  margin-top: 16px;
+  line-height: 1.8;
+}
+.capacity-formulas code {
+  display: block;
+  padding-top: 8px;
+  font-size: 9px;
+  color: #859377;
+}
+.experiment-layout {
+  display: grid;
+  grid-template-columns: 255px minmax(0, 1fr);
+  min-height: 280px;
+}
+.experiment-form {
+  padding: 15px;
+  border-right: 1px solid #e0e7d9;
+}
+.experiment-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 8px;
+}
+.experiment-fields .lab-field {
+  margin: 4px 0 10px;
+}
+.experiment-fields .field {
+  font-size: 10px;
+  padding: 8px;
+}
+.experiment-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.experiment-actions .save-button {
+  font-size: 10px;
+  padding: 8px 12px;
+}
+.experiment-actions button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+.experiment-error {
+  color: #b36850;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.experiment-results {
+  padding: 15px;
+  min-width: 0;
+}
+.experiment-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 10px;
+}
+.experiment-table th {
+  padding: 6px;
+  color: #8d9b7f;
+  font-size: 8px;
+  font-weight: 500;
+  border-bottom: 1px solid #dde6d4;
+}
+.experiment-table td {
+  padding: 9px 6px;
+  border-bottom: 1px solid #e6ecdf;
+}
+.experiment-table tr.selected {
+  background: #f0f5e9;
+}
+.experiment-table input {
+  accent-color: #718f5c;
+}
+.experiment-table button {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  color: #4d7243;
+  font-size: 10px;
+  padding: 0;
+}
+.targets-pass {
+  color: #5a8a4a;
+}
+.targets-fail {
+  color: #b47d56;
+}
+.experiment-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 12px 0;
+}
+.experiment-summary span {
+  font-size: 9px;
+  padding: 5px 7px;
+  background: #edf3e5;
+  border-radius: 4px;
+  color: #7b8b6a;
+}
+.comparison-delta {
+  font-size: 10px;
+  color: #788b67;
+  line-height: 1.7;
+}
+.experiment-chart {
+  margin-top: 13px;
+}
+.experiment-chart > span {
+  font-size: 10px;
+  color: #829373;
+}
+.experiment-chart svg {
+  width: 100%;
+  height: 140px;
+  display: block;
+}
+.experiment-chart text {
+  font: 9px var(--mono);
+  fill: #a0aa95;
+}
+.experiment-chart small {
+  font-size: 8px;
+  color: #95a087;
+}
+.experiment-results > details {
+  font-size: 10px;
+  color: #70885c;
+  margin-top: 16px;
+}
+.experiment-evidence > p {
+  font-size: 10px;
+}
+.experiment-evidence details {
+  padding: 9px 0;
+  border-bottom: 1px solid #e2e9da;
+}
+.experiment-evidence details > div {
+  display: flex;
+  gap: 7px;
+  padding: 5px 0;
+  font-size: 9px;
+  border-bottom: 1px solid #edf0e8;
+}
+.experiment-evidence code {
+  color: #9aa78c;
+  white-space: nowrap;
+}
+.experiment-evidence b {
+  font-weight: 500;
+  color: #7e916b;
+}
+.interview-empty {
+  padding: 45px 30px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #99a58b;
+}
+.interview-empty b {
+  font-size: 15px;
+  color: #788d67;
+}
+.circuit-readout {
+  background: #f0f4e9;
+  border: 1px solid #dae5cf;
+  border-radius: 5px;
+  padding: 11px;
+  margin-top: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.circuit-readout strong {
+  font-size: 11px;
+  text-transform: capitalize;
+  color: #5c7c4f;
+}
+.circuit-readout span,
+.circuit-readout small {
+  font-size: 9px;
+  color: #8b9a7b;
+}
+.circuit-readout.open {
+  background: #fbf0e5;
+  border-color: #ead6bb;
+}
+.circuit-readout.open strong {
+  color: #b38154;
+}
+.circuit-readout.half-open {
+  background: #f3eef9;
+  border-color: #ded3eb;
+}
+.connection-title {
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 15px 0;
+}
+.connection-title span {
+  font-size: 9px;
+  color: #9aa48e;
+  font-weight: 400;
+}
+.backend-circuit {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid #e9e2f2;
+  font-size: 9px;
+  color: #9c86ac;
+  display: flex;
+  justify-content: space-between;
+}
+.backend-circuit.open {
+  color: #bc825c;
+}
+@media (max-width: 1100px) {
+  .interview-heading {
+    flex-wrap: wrap;
+  }
+  .interview-clock {
+    margin-left: auto;
+  }
+  .experiment-layout {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+  .experiment-fields {
+    grid-template-columns: 1fr;
+  }
+  .brief-presets {
+    grid-template-columns: 1fr;
+  }
+  .interview-columns {
+    grid-template-columns: 1fr;
+  }
+  .interview-columns > section + section {
+    border-left: 0;
+    border-top: 1px solid #e3e9dd;
+  }
+  .experiment-table th,
+  .experiment-table td {
+    padding: 6px 3px;
+  }
+  .experiment-table th:first-child {
+    font-size: 7px;
+  }
+  .execution.interview-expanded {
+    max-height: 65vh;
+  }
+}
