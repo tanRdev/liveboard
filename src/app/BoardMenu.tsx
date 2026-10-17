@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 type Props = {
   title: string;
+  saveStatus: string;
+  saveError: string;
   onTitle: (title: string) => void;
   onNew: () => void;
   onImport: () => void;
@@ -63,6 +65,13 @@ export default function BoardMenu(props: Props) {
         value={props.title}
         onChange={(event) => props.onTitle(event.target.value)}
       />
+      <span
+        className={`local-save-status ${props.saveError ? "save-failed" : ""}`}
+        role="status"
+        title={props.saveError || "Changes save in this browser"}
+      >
+        {props.saveStatus}
+      </span>
       {open && (
         <div
           id="board-menu"
@@ -79,11 +88,11 @@ export default function BoardMenu(props: Props) {
           </button>
           <button onClick={() => action(props.onImport)}>
             <Upload size={15} />
-            Import board or exercise
+            Open board or exercise…
           </button>
           <button onClick={() => action(props.onExport)}>
             <Download size={15} />
-            Export board
+            Download board
           </button>
           <button onClick={() => action(props.onSave)}>
             <CheckCheck size={15} />

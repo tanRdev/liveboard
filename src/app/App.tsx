@@ -4,6 +4,8 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useMemo,
+  useCallback,
   useRef,
   useState,
   type CSSProperties,
@@ -24,6 +26,7 @@ import {
   ArrowRight,
   ArrowUpRight,
   Check,
+  Download,
   ChevronDown,
   ChevronUp,
   PanelLeftClose,
@@ -90,6 +93,7 @@ import useInterviewClock from "../interview/useInterviewClock";
 import { ConnectionInspector } from "../inspector/ResilienceControls";
 import Inspector from "../inspector/Inspector";
 import BoardMenu from "./BoardMenu";
+import { boardFilename, parseWorkspace, serializeWorkspace } from "./workspace";
 import ExecutionResizeHandle from "../board/ExecutionResizeHandle";
 const ChallengePanel = lazy(() => import("../challenges/ChallengePanel"));
 const InterviewPanel = lazy(() => import("../interview/InterviewPanel"));
@@ -100,7 +104,7 @@ function App() {
   const [saved] = useState(() => {
     try {
       const text = localStorage.getItem("liveboard-v1");
-      return text ? parseBoard(text) : undefined;
+      return text ? parseWorkspace(text) : undefined;
     } catch {
       // A damaged local document starts with an empty board.
       return undefined;
@@ -108,17 +112,17 @@ function App() {
   });
   const [empty] = useState(() => scenario("empty"));
   const [nodes, setNodes, onNodesChange] = useNodesState(
-    saved?.nodes ?? empty.nodes,
+    saved?.board.nodes ?? empty.nodes,
   );
   const [edges, setEdges, onEdgesChange] = useEdgesState(
-    saved?.edges ?? empty.edges,
+    saved?.board.edges ?? empty.edges,
   );
   const [config, setConfig] = useState<Config>({
     ...defaults,
-    ...saved?.config,
+    ...saved?.board.config,
   });
   const [brief, setBrief] = useState<InterviewBrief>(
-    () => saved?.interview ?? structuredClone(defaultBrief),
+    () => saved?.board.interview ?? structuredClone(defaultBrief),
   );
   const clock = useInterviewClock(brief.minutes);
   const [runs, setRuns] = useState<RecordedRun[]>([]);
@@ -130,7 +134,7 @@ function App() {
   const pendingRun = useRef<{ id: string; board: Board } | undefined>(
     undefined,
   );
-  const [title, setTitle] = useState(saved?.title ?? empty.title);
+  const [title, setTitle] = useState(saved?.board.title ?? empty.title);
   const [state, setState] = useState<Snapshot>(initialSnapshot);
   const [selection, setSelection] = useState("");
   const [search, setSearch] = useState("");
@@ -140,6 +144,11 @@ function App() {
   const [tab, setTab] = useState("Requests");
   const [requestId, setRequestId] = useState<number | null>(null);
   const [toast, setToast] = useState("");
+  const [saveStatus, setSaveStatus] = useState("Saved");
+  const [saveError, setSaveError] = useState("");
+  const [fileDrop, setFileDrop] = useState(false);
+  const dragDepth = useRef(0);
+  const importRevision = useRef(0);
   const [help, setHelp] = useState(false);
   const helpDialog = useRef<HTMLDialogElement>(null);
   const [traffic, setTraffic] = useState(1);
@@ -148,6 +157,7 @@ function App() {
   const message = (type: string, extra = {}) =>
     worker.current?.postMessage({ type, ...extra });
   const game = useChallengeSession({
+    initial: saved,
     send: message,
     onLoad: (board) => loadBoard(board),
     onFocus: () => selectExecutionTab("Challenges"),
@@ -266,6 +276,8 @@ function App() {
     function keyboard(event: KeyboardEvent) {
       if (document.querySelector("dialog[open], #board-menu")) return;
       if (event.key === "Escape") {
+        setFileDrop(false);
+        dragDepth.current = 0;
         setPanel(null);
         setWorkspaceExpanded(false);
       }
@@ -344,19 +356,70 @@ function App() {
     message("cancelExperiment");
     setExperiment({ running: false, progress: 0, error: "" });
   };
-  const save = () => {
+  const localDocument = useMemo(() => {
     try {
-      const text = serializeBoard(boardDocument());
-      parseBoard(text);
-      localStorage.setItem("liveboard-v1", text);
-      setToast("Board saved on this device");
+      return {
+        text: serializeWorkspace({
+          board: { version: 1, nodes, edges, config, title, interview: brief },
+          active: game.active,
+          draft: game.draft,
+          view: game.view,
+        }),
+        error: "",
+      };
     } catch (error) {
-      setToast(
-        error instanceof Error && error.name !== "QuotaExceededError"
-          ? error.message
-          : "Storage is full. Export your board instead.",
-      );
+      return {
+        text: "",
+        error:
+          error instanceof Error
+            ? error.message
+            : "Check the board settings before saving.",
+      };
     }
+  }, [nodes, edges, config, title, brief, game.active, game.draft, game.view]);
+  const writeLocal = useCallback(() => {
+    try {
+      if (!localDocument.text) throw new Error(localDocument.error);
+      localStorage.setItem("liveboard-v1", localDocument.text);
+      setSaveStatus("Saved");
+      setSaveError("");
+      return true;
+    } catch (error) {
+      setSaveStatus("Not saved");
+      setSaveError(
+        error instanceof Error &&
+          error.name !== "QuotaExceededError" &&
+          error.name !== "SecurityError"
+          ? error.message
+          : "Browser storage is unavailable or full. Download a copy.",
+      );
+      return false;
+    }
+  }, [localDocument]);
+  useEffect(() => {
+    if (localDocument.error) {
+      setSaveStatus("Not saved");
+      setSaveError(localDocument.error);
+      return;
+    }
+    setSaveStatus("Saving…");
+    const timer = setTimeout(writeLocal, 500);
+    const flush = () => {
+      writeLocal();
+    };
+    const hidden = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", hidden);
+    };
+  }, [localDocument, writeLocal]);
+  const save = () => {
+    if (writeLocal()) setToast("Workspace saved in this browser");
   };
   const add = (role: Role, position?: { x: number; y: number }) => {
     let id: string = role;
@@ -440,12 +503,14 @@ function App() {
   };
   const importBoard = async (file?: File) => {
     if (!file) return;
+    const revision = ++importRevision.current;
     if (file.size > 3_000_000) {
       setToast("Import files must be smaller than 3 MB.");
       return;
     }
     try {
       const text = await file.text();
+      if (revision !== importRevision.current) return;
       const format = JSON.parse(text)?.format;
       if (format === "liveboard-challenge-v1") {
         game.open(parseChallenge(text));
@@ -465,7 +530,7 @@ function App() {
       const board = parseBoard(text);
       game.leave();
       loadBoard(board);
-      setToast("Board imported. Save to keep it on this device.");
+      setToast("Board opened");
     } catch (error) {
       setToast(
         error instanceof Error
@@ -490,7 +555,7 @@ function App() {
     );
     const a = document.createElement("a");
     a.href = url;
-    a.download = "liveboard.json";
+    a.download = boardFilename(title);
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -537,6 +602,34 @@ function App() {
   });
   return (
     <div
+      onDragEnter={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        dragDepth.current += 1;
+        setFileDrop(true);
+      }}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (!dragDepth.current) setFileDrop(false);
+      }}
+      onDrop={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        dragDepth.current = 0;
+        setFileDrop(false);
+        if (event.dataTransfer.files.length !== 1) {
+          setToast("Drop one board, exercise, or submission file at a time.");
+          return;
+        }
+        void importBoard(event.dataTransfer.files[0]);
+      }}
       style={
         {
           "--execution-space":
@@ -547,6 +640,8 @@ function App() {
     >
       <BoardMenu
         title={title}
+        saveStatus={saveStatus}
+        saveError={saveError}
         onTitle={setTitle}
         onNew={() => resetBoard("empty")}
         onImport={() => fileInput.current?.click()}
@@ -834,7 +929,7 @@ function App() {
                 onInit={(instance) => {
                   flow.current = instance;
                 }}
-                fitView={Boolean(saved?.nodes.length)}
+                fitView={Boolean(saved?.board.nodes.length)}
                 onNodeClick={(_, node) => {
                   setSelection(node.id);
                   setPanel("inspector");
@@ -878,7 +973,7 @@ function App() {
               <div className="empty-board">
                 <Layers size={32} />
                 <h2>Untitled system</h2>
-                <p>Add components and connect their ports.</p>
+                <p>Add components, or drop a board or exercise file.</p>
                 <button
                   className="save-button"
                   onClick={() => setPanel("components")}
@@ -1481,6 +1576,13 @@ function App() {
           )}
         </div>
       )}
+      {fileDrop && (
+        <div className="file-drop-overlay" role="status">
+          <Download size={32} />
+          <strong>Drop to open</strong>
+          <span>Board, exercise, or submission · JSON</span>
+        </div>
+      )}
       {toast && (
         <div className="toast" role="status">
           <Check size={15} />
@@ -1529,8 +1631,9 @@ function App() {
           </li>
           <li>Press Escape to hide panels. Toggle Map to show the minimap.</li>
           <li>
-            Use the Board menu to save, import, or export. Templates are
-            available in the component library.
+            Changes save in this browser. Use the Board menu to download a copy
+            or open a file. Drop a board, exercise, or submission file anywhere
+            on the workspace.
           </li>
         </ul>
         <button className="save-button" onClick={() => setHelp(false)}>

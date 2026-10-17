@@ -49,14 +49,26 @@ export default function useChallengeSession({
   send,
   onLoad,
   onFocus,
+  initial,
 }: {
   send: (type: string, extra?: Record<string, unknown>) => void;
   onLoad: (board: Board) => void;
   onFocus: () => void;
+  initial?: {
+    active?: ChallengeDefinition;
+    draft?: ChallengeDefinition;
+    view: "gallery" | "play" | "author";
+  };
 }) {
-  const [active, setActive] = useState<ChallengeDefinition>();
-  const [draft, setDraft] = useState<ChallengeDefinition>();
-  const [view, setView] = useState<"gallery" | "play" | "author">("gallery");
+  const [active, setActive] = useState<ChallengeDefinition | undefined>(
+    initial?.active,
+  );
+  const [draft, setDraft] = useState<ChallengeDefinition | undefined>(
+    initial?.draft,
+  );
+  const [view, setView] = useState<"gallery" | "play" | "author">(
+    initial?.view ?? "gallery",
+  );
   const [report, setReport] = useState<ChallengeReport>();
   const [baseline, setBaseline] = useState<ChallengeReport>();
   const [hints, setHints] = useState(0);
@@ -75,7 +87,12 @@ export default function useChallengeSession({
     error: "",
     baseline: false,
   });
-  const trusted = useRef(new Map<string, ChallengeDefinition>());
+  const [trusted] = useState(
+    () =>
+      new Map<string, ChallengeDefinition>(
+        initial?.active ? [[initial.active.id, initial.active]] : [],
+      ),
+  );
   const pending = useRef<
     | {
         id: string;
@@ -103,7 +120,7 @@ export default function useChallengeSession({
         captured = parseBoard(serializeBoard(board)),
         id = crypto.randomUUID();
       send("cancelChallenge");
-      if (options.author) trusted.current.set(challenge.id, challenge);
+      if (options.author) trusted.set(challenge.id, challenge);
       const baseline = !!options.baseline,
         author = !!options.author,
         attempt = baseline || author ? attempts : attempts + 1;
@@ -132,7 +149,7 @@ export default function useChallengeSession({
   const open = (definition: ChallengeDefinition, solution?: Board) => {
     const challenge = parseChallenge(definition);
     cancel();
-    trusted.current.set(challenge.id, challenge);
+    trusted.set(challenge.id, challenge);
     setStatus({ running: false, progress: 0, error: "", baseline: false });
     setActive(challenge);
     setReport(undefined);
@@ -210,7 +227,7 @@ export default function useChallengeSession({
   };
   const review = (definition: ChallengeDefinition, solution: Board) => {
     const original =
-      trusted.current.get(definition.id) ??
+      trusted.get(definition.id) ??
       challengeCatalog.find((c) => c.id === definition.id);
     if (!original)
       throw new Error(

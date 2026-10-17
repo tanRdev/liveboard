@@ -1017,3 +1017,45 @@
 .board-shell .execution-tabs > button.active {
   color: #286847;
 }
+
+.local-save-status {
+  flex-shrink: 0;
+  padding: 4px 6px;
+  border-left: 1px solid #e3eae5;
+  color: #6a8172;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.local-save-status.save-failed {
+  color: #a14c36;
+}
+.file-drop-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 90;
+  border: 2px dashed #438461;
+  border-radius: 14px;
+  background: #f3faf5f5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  color: #286847;
+  pointer-events: none;
+}
+.file-drop-overlay strong {
+  font-size: 22px;
+}
+.file-drop-overlay span {
+  font-size: 12px;
+}
+@media (max-width: 540px) {
+  .board-identity > input {
+    width: 150px;
+  }
+  .local-save-status {
+    font-size: 9px;
+    padding-inline: 5px;
+  }
+}
