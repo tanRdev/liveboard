@@ -493,7 +493,13 @@ export class Engine {
           ? "No healthy backend targets"
           : "Connect the client or load balancer to a backend",
       };
-    if (!viaBalancer) return { id: healthy[0], viaBalancer };
+    // A drawn client edge is a real route. Without a balancer, share traffic
+    // round-robin. Least-connections stays a load-balancer policy.
+    if (!viaBalancer)
+      return {
+        id: healthy[this.roundRobin++ % healthy.length],
+        viaBalancer,
+      };
     let candidates = healthy;
     if (this.config.balancer.policy === "least-connections") {
       const least = Math.min(
@@ -1299,14 +1305,28 @@ export class Engine {
         this.dependencyFailure(j, 503, "Database unavailable during read");
         return;
       }
-      j.attemptDeadline = undefined;
-      this.circuits.success(j.backendId!, j.generation ?? 0);
       const read = this.database.read(j.path.split("/").pop()!, this.state.now);
       this.emit(j, "database", this.database.state.reply);
       if (read.error) {
-        this.finish(429, { error: read.error }, "database");
+        // Throttling is a failed dependency attempt and can open the breaker.
+        // It is not retried: a missing row is a successful lookup, and a quota
+        // window does not refill during backoff.
+        j.attemptDeadline = undefined;
+        this.circuits.failure(
+          j.backendId!,
+          resilienceSettings(this.config, j.backendId!),
+          this.state.now,
+          j.generation ?? 0,
+        );
+        this.finish(
+          429,
+          { error: read.error, attempts: j.attempt },
+          "database",
+        );
         return;
       }
+      j.attemptDeadline = undefined;
+      this.circuits.success(j.backendId!, j.generation ?? 0);
       const value = read.value;
       if (!value) {
         this.finish(404, { error: "User not found" }, "database");

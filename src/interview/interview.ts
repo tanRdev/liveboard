@@ -108,6 +108,12 @@ export const briefs = [
       "Preserve order for each customer key. Let independent groups consume the same events. Demonstrate commit and replay behavior. Explain producer acknowledgments during a replica failure.",
   },
 ];
+export function briefForLoad(
+  board: { interview?: InterviewBrief },
+  override?: InterviewBrief,
+): InterviewBrief {
+  return structuredClone(override ?? board.interview ?? defaultBrief);
+}
 export function parseBrief(value: unknown): InterviewBrief {
   if (value === undefined) return structuredClone(defaultBrief);
   if (!value || typeof value !== "object" || Array.isArray(value))

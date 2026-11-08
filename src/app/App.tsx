@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
 } from "react";
 import {
   ReactFlow,
@@ -77,6 +78,7 @@ import { technology } from "../simulation/settings";
 import useChallengeSession from "../challenges/useChallengeSession";
 import { parseChallenge, parseSubmission } from "../challenges/challenges";
 import {
+  briefForLoad,
   briefs,
   defaultBrief,
   type InterviewBrief,
@@ -93,23 +95,60 @@ import useInterviewClock from "../interview/useInterviewClock";
 import { ConnectionInspector } from "../inspector/ResilienceControls";
 import Inspector from "../inspector/Inspector";
 import BoardMenu from "./BoardMenu";
-import { boardFilename, parseWorkspace, serializeWorkspace } from "./workspace";
+import {
+  boardFilename,
+  boardWasRepaired,
+  parseWorkspace,
+  serializeWorkspace,
+  type LocalWorkspace,
+} from "./workspace";
+import {
+  WORKSPACE_KEY,
+  discardRecovery,
+  loadStoredWorkspace,
+  planWorkspaceWrite,
+  workspaceBody,
+  workspaceContent,
+} from "./persistence";
 import ExecutionResizeHandle from "../board/ExecutionResizeHandle";
 const ChallengePanel = lazy(() => import("../challenges/ChallengePanel"));
 const InterviewPanel = lazy(() => import("../interview/InterviewPanel"));
 const LabPanel = lazy(() => import("../labs/LabPanel"));
 const edgeTypes = { traffic: TrafficEdge };
 const nodeTypes = { component: ComponentNode };
+function downloadText(name: string, text: string) {
+  const url = URL.createObjectURL(
+    new Blob([text], { type: "application/json" }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function WorkspaceNotice({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="workspace-notice" role="alert">
+      <strong>{title}</strong>
+      {children}
+    </div>
+  );
+}
 function App() {
-  const [saved] = useState(() => {
+  const [boot] = useState(() => {
     try {
-      const text = localStorage.getItem("liveboard-v1");
-      return text ? parseWorkspace(text) : undefined;
+      return loadStoredWorkspace(localStorage);
     } catch {
-      // A damaged local document starts with an empty board.
-      return undefined;
+      return { status: "empty" as const };
     }
   });
+  const saved = boot.status === "ok" ? boot.workspace : undefined;
   const [empty] = useState(() => scenario("empty"));
   const [nodes, setNodes, onNodesChange] = useNodesState(
     saved?.board.nodes ?? empty.nodes,
@@ -145,7 +184,37 @@ function App() {
   const [requestId, setRequestId] = useState<number | null>(null);
   const [toast, setToast] = useState("");
   const [saveStatus, setSaveStatus] = useState("Saved");
-  const [saveError, setSaveError] = useState("");
+  const [saveError, setSaveError] = useState(
+    boot.status === "unreadable" && !boot.preserved
+      ? "Download the unreadable workspace before replacing it."
+      : "",
+  );
+  const [recoveryText, setRecoveryText] = useState(
+    boot.status === "unreadable" ? boot.text : "",
+  );
+  const [recoveryDownloaded, setRecoveryDownloaded] = useState(false);
+  const [conflictText, setConflictText] = useState("");
+  const blockWrites = useRef(boot.status === "unreadable" && !boot.preserved);
+  const bootBody = useRef<string | null>(
+    boot.status === "unreadable" ? null : "",
+  );
+  const echoing = useRef(false);
+  const echoContent = useRef("");
+  const sessionRef = useRef({
+    loadBoard: (_board: Board, _brief?: InterviewBrief) => {},
+    restore: (_session: {
+      active?: LocalWorkspace["active"];
+      draft?: LocalWorkspace["draft"];
+      view: LocalWorkspace["view"];
+    }) => {},
+    draft: (): LocalWorkspace => ({
+      board: { version: 1, nodes: [], edges: [], config, title: "", interview: brief },
+      view: "gallery",
+    }),
+  });
+  const baseRevision = useRef(saved?.revision ?? 0);
+  const lastBody = useRef(boot.status === "ok" ? workspaceBody(boot.text) : "");
+  const previousWorkspace = useRef<LocalWorkspace | undefined>(saved);
   const [fileDrop, setFileDrop] = useState(false);
   const dragDepth = useRef(0);
   const importRevision = useRef(0);
@@ -356,31 +425,86 @@ function App() {
     message("cancelExperiment");
     setExperiment({ running: false, progress: 0, error: "" });
   };
-  const localDocument = useMemo(() => {
-    try {
-      return {
-        text: serializeWorkspace({
-          board: { version: 1, nodes, edges, config, title, interview: brief },
-          active: game.active,
-          draft: game.draft,
-          view: game.view,
-        }),
-        error: "",
-      };
-    } catch (error) {
-      return {
-        text: "",
-        error:
-          error instanceof Error
-            ? error.message
-            : "Check the board settings before saving.",
-      };
-    }
-  }, [nodes, edges, config, title, brief, game.active, game.draft, game.view]);
+  const workspaceDraft = (): LocalWorkspace => ({
+    board: { version: 1, nodes, edges, config, title, interview: brief },
+    active: game.active,
+    draft: game.draft,
+    view: game.view,
+    revision: baseRevision.current,
+  });
+  const localDocument = useMemo(
+    () => ({
+      nodes,
+      edges,
+      config,
+      title,
+      brief,
+      active: game.active,
+      draft: game.draft,
+      view: game.view,
+    }),
+    [nodes, edges, config, title, brief, game.active, game.draft, game.view],
+  );
   const writeLocal = useCallback(() => {
     try {
-      if (!localDocument.text) throw new Error(localDocument.error);
-      localStorage.setItem("liveboard-v1", localDocument.text);
+      if (blockWrites.current) {
+        setSaveStatus("Not saved");
+        setSaveError(
+          "Download the unreadable workspace before replacing it.",
+        );
+        return false;
+      }
+      const nextText = serializeWorkspace(
+        workspaceDraft(),
+        previousWorkspace.current,
+      );
+      const stored = localStorage.getItem(WORKSPACE_KEY);
+      if (stored && workspaceBody(stored) === workspaceBody(nextText)) {
+        const revision = planWorkspaceWrite({
+          baseRevision: baseRevision.current,
+          storedText: stored,
+          nextText,
+        });
+        if (revision.action === "adopt") {
+          baseRevision.current = revision.revision;
+          lastBody.current = workspaceBody(stored);
+          setSaveStatus("Saved");
+          setSaveError("");
+          return true;
+        }
+      }
+      const decision = planWorkspaceWrite({
+        baseRevision: baseRevision.current,
+        storedText: stored,
+        nextText,
+        blockWrites: blockWrites.current,
+      });
+      if (decision.action === "adopt") {
+        baseRevision.current = decision.revision;
+        lastBody.current = workspaceBody(stored ?? nextText);
+        setSaveStatus("Saved");
+        setSaveError("");
+        return true;
+      }
+      if (decision.action === "conflict") {
+        setConflictText(decision.storedText);
+        setSaveStatus("Not saved");
+        setSaveError("A newer workspace is open in another tab.");
+        return false;
+      }
+      if (decision.action === "refuse") {
+        setSaveStatus("Not saved");
+        setSaveError(
+          decision.reason === "quarantine"
+            ? "Download the unreadable workspace before replacing it."
+            : "The saved workspace could not be read. Download it before replacing it.",
+        );
+        return false;
+      }
+      localStorage.setItem(WORKSPACE_KEY, decision.text);
+      baseRevision.current = decision.revision;
+      lastBody.current = workspaceBody(decision.text);
+      previousWorkspace.current = parseWorkspace(decision.text);
       setSaveStatus("Saved");
       setSaveError("");
       return true;
@@ -395,13 +519,37 @@ function App() {
       );
       return false;
     }
+    // workspaceDraft reads the latest render state captured by localDocument.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localDocument]);
   useEffect(() => {
-    if (localDocument.error) {
+    let text = "";
+    try {
+      text = serializeWorkspace(workspaceDraft(), previousWorkspace.current);
+    } catch (error) {
       setSaveStatus("Not saved");
-      setSaveError(localDocument.error);
+      setSaveError(
+        error instanceof Error
+          ? error.message
+          : "Check the board settings before saving.",
+      );
       return;
     }
+    const body = workspaceBody(text);
+    if (boot.status === "unreadable") {
+      if (bootBody.current === null) {
+        bootBody.current = body;
+        return;
+      }
+      if (body === bootBody.current) return;
+    }
+    if (echoing.current && workspaceContent(text) === echoContent.current) {
+      lastBody.current = body;
+      setSaveStatus("Saved");
+      setSaveError("");
+      return;
+    }
+    echoing.current = false;
     setSaveStatus("Saving…");
     const timer = setTimeout(writeLocal, 500);
     const flush = () => {
@@ -418,6 +566,52 @@ function App() {
       document.removeEventListener("visibilitychange", hidden);
     };
   }, [localDocument, writeLocal]);
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== WORKSPACE_KEY || !event.newValue) return;
+      let remote: LocalWorkspace;
+      try {
+        remote = parseWorkspace(event.newValue);
+      } catch {
+        return;
+      }
+      const remoteBody = workspaceBody(event.newValue);
+      if (remote.revision !== undefined && remote.revision < baseRevision.current)
+        return;
+      if (remoteBody === lastBody.current) {
+        baseRevision.current = remote.revision ?? baseRevision.current;
+        return;
+      }
+      let localText = "";
+      try {
+        localText = serializeWorkspace(
+          sessionRef.current.draft(),
+          previousWorkspace.current,
+        );
+      } catch {
+        setConflictText(event.newValue);
+        return;
+      }
+      if (workspaceBody(localText) === lastBody.current) {
+        previousWorkspace.current = remote;
+        baseRevision.current = remote.revision ?? 0;
+        lastBody.current = remoteBody;
+        echoing.current = true;
+        echoContent.current = workspaceContent(event.newValue);
+        sessionRef.current.loadBoard(remote.board);
+        sessionRef.current.restore({
+          active: remote.active,
+          draft: remote.draft,
+          view: remote.view,
+        });
+        setConflictText("");
+        return;
+      }
+      setConflictText(event.newValue);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   const save = () => {
     if (writeLocal()) setToast("Workspace saved in this browser");
   };
@@ -457,7 +651,7 @@ function App() {
         cache: { ...current.cache, technology: "redis" },
       }));
   };
-  const loadBoard = (board: Board) => {
+  const loadBoard = (board: Board, briefOverride?: InterviewBrief) => {
     setNodes(
       board.nodes.map((node) => ({
         ...node,
@@ -472,7 +666,7 @@ function App() {
     if (!board.nodes.length) {
       setPanel("components");
     }
-    if (board.interview) setBrief(board.interview);
+    setBrief(briefForLoad(board, briefOverride));
     setTitle(board.title);
     setSelection(
       board.nodes.find((n) => n.data.role === "balancer")?.id ??
@@ -486,6 +680,11 @@ function App() {
         void flow.current?.fitView({ padding: 0.15 });
       }),
     );
+  };
+  sessionRef.current = {
+    loadBoard,
+    restore: game.restore,
+    draft: workspaceDraft,
   };
   const resetBoard = (kind: Scenario) => {
     game.leave();
@@ -540,8 +739,14 @@ function App() {
     }
   };
   const exportBoard = () => {
+    const current = workspaceDraft();
+    let text: string;
     try {
-      parseBoard(serializeBoard(boardDocument()));
+      text = serializeBoard(
+        parseWorkspace(
+          serializeWorkspace(current, previousWorkspace.current),
+        ).board,
+      );
     } catch (error) {
       setToast(
         error instanceof Error
@@ -550,8 +755,12 @@ function App() {
       );
       return;
     }
+    if (boardWasRepaired(current, previousWorkspace.current))
+      setToast(
+        "Downloaded the board. Unfinished fields kept their last valid values.",
+      );
     const url = URL.createObjectURL(
-      new Blob([serializeBoard(boardDocument())], { type: "application/json" }),
+      new Blob([text], { type: "application/json" }),
     );
     const a = document.createElement("a");
     a.href = url;
@@ -600,6 +809,65 @@ function App() {
       },
     };
   });
+  const canReplaceUnreadable = !blockWrites.current || recoveryDownloaded;
+  const downloadRecovery = () => {
+    if (!recoveryText) return;
+    downloadText("liveboard-unreadable.json", recoveryText);
+    setRecoveryDownloaded(true);
+    blockWrites.current = false;
+  };
+  const startFresh = () => {
+    if (!canReplaceUnreadable) return;
+    blockWrites.current = false;
+    lastBody.current = "";
+    if (writeLocal()) setSaveError("");
+  };
+  const discardSavedCopy = () => {
+    if (!recoveryDownloaded) return;
+    try {
+      discardRecovery(localStorage);
+    } catch {
+      /* Closing the notice is still useful if storage is blocked. */
+    }
+    setRecoveryText("");
+  };
+  const loadConflict = () => {
+    if (!conflictText) return;
+    try {
+      const remote = parseWorkspace(conflictText);
+      previousWorkspace.current = remote;
+      baseRevision.current = remote.revision ?? 0;
+      lastBody.current = workspaceBody(conflictText);
+      echoing.current = true;
+      echoContent.current = workspaceContent(conflictText);
+      loadBoard(remote.board);
+      game.restore({
+        active: remote.active,
+        draft: remote.draft,
+        view: remote.view,
+      });
+      setConflictText("");
+      setSaveStatus("Saved");
+      setSaveError("");
+    } catch (error) {
+      setSaveError(
+        error instanceof Error
+          ? error.message
+          : "The other tab's workspace could not be read.",
+      );
+    }
+  };
+  const keepConflict = () => {
+    if (!conflictText) return;
+    try {
+      baseRevision.current = parseWorkspace(conflictText).revision ?? 0;
+    } catch {
+      setSaveError("The other tab's workspace could not be read.");
+      return;
+    }
+    setConflictText("");
+    writeLocal();
+  };
   return (
     <div
       onDragEnter={(event) => {
@@ -1223,12 +1491,16 @@ function App() {
                     onLoadBrief={(id) => {
                       const item = briefs.find((b) => b.id === id);
                       if (!item) return;
-                      loadBoard(scenario(item.scenario));
-                      setBrief({
-                        ...structuredClone(defaultBrief),
-                        prompt: item.prompt,
-                        requirements: item.requirements,
-                      });
+                      const preset = scenario(item.scenario);
+                      game.leave();
+                      loadBoard(
+                        preset,
+                        briefForLoad(preset, {
+                          ...structuredClone(defaultBrief),
+                          prompt: item.prompt,
+                          requirements: item.requirements,
+                        }),
+                      );
                       clock.reset(defaultBrief.minutes);
                       selectExecutionTab("Interview");
                     }}
@@ -1582,6 +1854,50 @@ function App() {
           <strong>Drop to open</strong>
           <span>Board, exercise, or submission · JSON</span>
         </div>
+      )}
+      {recoveryText && (
+        <WorkspaceNotice title="A saved workspace could not be opened">
+          <p>
+            {canReplaceUnreadable
+              ? "A copy is stored on this device. You can download it, start a new board, or keep editing. Discard the copy only after downloading it."
+              : "This tab will not replace the saved file until you download a copy."}
+          </p>
+          <div className="workspace-notice-actions">
+            <button type="button" onClick={downloadRecovery}>
+              Download copy
+            </button>
+            <button
+              type="button"
+              onClick={startFresh}
+              disabled={!canReplaceUnreadable}
+            >
+              Start fresh
+            </button>
+            <button
+              type="button"
+              onClick={discardSavedCopy}
+              disabled={!recoveryDownloaded}
+            >
+              Discard copy
+            </button>
+          </div>
+        </WorkspaceNotice>
+      )}
+      {conflictText && (
+        <WorkspaceNotice title="This workspace changed in another tab">
+          <p>
+            Saving now would replace that newer copy. Load it, or keep the
+            board open in this tab.
+          </p>
+          <div className="workspace-notice-actions">
+            <button type="button" onClick={loadConflict}>
+              Load other tab
+            </button>
+            <button type="button" onClick={keepConflict}>
+              Keep this tab
+            </button>
+          </div>
+        </WorkspaceNotice>
       )}
       {toast && (
         <div className="toast" role="status">

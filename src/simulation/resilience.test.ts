@@ -115,6 +115,42 @@ describe("Dependency retries and connection failures", () => {
     e.advance(900);
     expect(e.state.results[0].status).toBe(429);
     expect(e.state.circuits.backend.retries).toBe(0);
+    expect(e.state.circuits.backend.successes).toBe(0);
+    expect(e.state.circuits.backend.failures).toBe(1);
+  });
+  it("opens the breaker when a throttled read is the failure threshold", () => {
+    const e = new Engine();
+    e.configure({
+      ...defaults,
+      delay: 1,
+      concurrency: 2,
+      timeout: 5000,
+      database: {
+        ...defaults.database,
+        technology: "dynamodb",
+        readFrom: "primary",
+        readCapacity: 1,
+      },
+      resilienceOverrides: {
+        backend: {
+          breaker: true,
+          failureThreshold: 1,
+          maxRetries: 3,
+          attemptTimeout: 5000,
+        },
+      },
+    });
+    e.send("/users/1", 2);
+    e.advance(900);
+    expect(e.state.results.map((result) => result.status).sort()).toEqual([
+      200, 429,
+    ]);
+    expect(e.state.circuits.backend).toMatchObject({
+      state: "open",
+      successes: 1,
+      failures: 1,
+      retries: 0,
+    });
   });
   it("uses bounded fixed and exponential retry delays", () => {
     expect(retryDelay({ ...resilienceDefaults, backoffMs: 100 }, 1)).toBe(100);

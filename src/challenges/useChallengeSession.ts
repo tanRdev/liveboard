@@ -246,6 +246,22 @@ export default function useChallengeSession({
     setBaseline(undefined);
     setView("gallery");
   };
+  const restore = (session: {
+    active?: ChallengeDefinition;
+    draft?: ChallengeDefinition;
+    view: "gallery" | "play" | "author";
+  }) => {
+    cancel();
+    if (session.active) trusted.set(session.active.id, session.active);
+    setActive(session.active);
+    setDraft(session.draft);
+    setView(session.view);
+    setReport(undefined);
+    setBaseline(undefined);
+    setHints(0);
+    setAttempts(0);
+    setStatus({ running: false, progress: 0, error: "", baseline: false });
+  };
   return {
     active,
     draft,
@@ -265,6 +281,7 @@ export default function useChallengeSession({
     cancel,
     receive,
     leave,
+    restore,
     pending,
   };
 }

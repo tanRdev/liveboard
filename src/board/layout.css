@@ -1029,6 +1029,46 @@
 .local-save-status.save-failed {
   color: #a14c36;
 }
+.workspace-notice {
+  position: fixed;
+  top: 68px;
+  left: 50%;
+  z-index: 40;
+  width: min(520px, calc(100% - 24px));
+  transform: translateX(-50%);
+  padding: 14px 16px;
+  border: 1px solid #e4c7a8;
+  border-radius: 8px;
+  background: #fffdf8;
+  color: #5c4632;
+  box-shadow: 0 8px 24px #293f2618;
+}
+.workspace-notice strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.workspace-notice p {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.workspace-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.workspace-notice-actions button {
+  border: 1px solid #d7c3ae;
+  border-radius: 6px;
+  background: white;
+  color: #5c4632;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.workspace-notice-actions button:disabled {
+  opacity: 0.45;
+}
 .file-drop-overlay {
   position: absolute;
   inset: 8px;

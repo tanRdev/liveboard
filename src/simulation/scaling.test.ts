@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { Engine, type Config, type Role } from "./engine";
-import { scenario } from "../board/board";
+import { Engine, defaults, type Config, type Role } from "./engine";
+import { createEdge, createNode, executionConfig, scenario } from "../board/board";
 function scaled(): Config {
   const board = scenario("balanced");
   return {
@@ -137,6 +137,35 @@ describe("load balancing", () => {
     expect(
       new Set(e.state.results.slice(0, 2).map((r) => r.backendId)),
     ).toEqual(new Set(["backend", "backend-2"]));
+  });
+  it("shares direct client connections across healthy backends", () => {
+    const board = scenario("empty");
+    board.nodes = [
+      createNode("client"),
+      createNode("backend", "backend", { x: 300, y: 40 }),
+      createNode("backend", "backend-2", { x: 300, y: 280 }),
+      createNode("database"),
+    ];
+    board.edges = [
+      createEdge("client", "backend"),
+      createEdge("client", "backend-2"),
+      createEdge("backend", "database"),
+      createEdge("backend-2", "database"),
+    ];
+    const engine = new Engine();
+    engine.configure({ ...defaults, ...executionConfig(board) });
+    engine.send("/users/1", 6);
+    expect(engine.state.backends.backend.reachable).toBe(true);
+    expect(engine.state.backends["backend-2"].reachable).toBe(true);
+    expect(engine.state.backends.backend.assigned).toBe(3);
+    expect(engine.state.backends["backend-2"].assigned).toBe(3);
+    engine.configure({
+      ...engine.config,
+      backendOverrides: { "backend-2": { online: false } },
+    });
+    engine.send("/users/1", 4);
+    expect(engine.state.backends.backend.assigned).toBe(7);
+    expect(engine.state.backends["backend-2"].assigned).toBe(3);
   });
   it("returns 503 when all targets or the balancer are offline", () => {
     const base = scaled();
