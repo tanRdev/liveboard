@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { ArrowUpRight, Play, Square, Activity } from "lucide-react";
 import type { Snapshot } from "../simulation/engine";
+import { capacityHint } from "./capacity";
 
 type Props = {
   state: Snapshot;
   path: string;
   dependencies: string[];
   paused: boolean;
+  missMs: number;
   onTraffic: (rate: number, path: string, running: boolean) => void;
   onConfigure: () => void;
 };
@@ -16,6 +18,7 @@ export default function TrafficPanel({
   path,
   dependencies,
   paused,
+  missMs,
   onTraffic,
   onConfigure,
 }: Props) {
@@ -46,6 +49,14 @@ export default function TrafficPanel({
     .sort((a, b) => a - b);
   const p95 = samples[Math.max(0, Math.ceil(samples.length * 0.95) - 1)] ?? 0;
   const queued = Math.min(100, (state.queue / Math.max(1, queueLimit)) * 100);
+  const hint = capacityHint({
+    rate,
+    concurrency,
+    queue: state.queue,
+    queueLimit,
+    missMs,
+  });
+  const backlog = state.queue > 0 && failureRate === 0;
   return (
     <div className="traffic-panel">
       <div className="traffic-controls">
@@ -78,6 +89,9 @@ export default function TrafficPanel({
           {traffic.running ? "Stop traffic" : "Start traffic"}
         </button>
       </div>
+      <p className={`capacity-hint ${hint.over ? "over" : ""}`} role="status">
+        {hint.text}
+      </p>
       <div className="traffic-context">
         <code>GET {traffic.running ? traffic.path : path}</code>
         <span>
@@ -101,12 +115,17 @@ export default function TrafficPanel({
             <small> / {concurrency}</small>
           </strong>
         </div>
-        <div>
+        <div className={backlog ? "backlog" : ""}>
           <span>Waiting work</span>
           <strong>
             {state.queue}
             <small> / {queueLimit}</small>
           </strong>
+          {backlog && (
+            <small className="backlog-note">
+              Still queued. These are not failures yet.
+            </small>
+          )}
           <div className="traffic-meter">
             <i style={{ width: `${queued}%` }} />
           </div>

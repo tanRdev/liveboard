@@ -431,7 +431,7 @@
 .board-menu-popover small {
   font-size: 9px;
   font-weight: 400;
-  color: #839086;
+  color: #3f5349;
 }
 .board-menu-popover button {
   justify-content: flex-start;
@@ -647,9 +647,9 @@
   flex-shrink: 0;
 }
 .quick-clock {
-  color: #8b9b90;
+  color: #3f5349;
   font:
-    10px "IBM Plex Mono",
+    12px var(--font-mono), "IBM Plex Mono",
     monospace;
   width: 44px;
 }
@@ -664,7 +664,7 @@
   border: 0;
   background: transparent;
   font:
-    11px "IBM Plex Mono",
+    12px var(--font-mono), "IBM Plex Mono",
     monospace;
   color: #415f4a;
   padding: 7px 2px;
@@ -1095,7 +1095,52 @@
     width: 150px;
   }
   .local-save-status {
-    font-size: 9px;
+    font-size: 12px;
     padding-inline: 5px;
   }
+}
+.coach-banner {
+  position: absolute;
+  z-index: 28;
+  top: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(760px, calc(100% - 28px));
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #d5e0d8;
+  border-radius: 12px;
+}
+.coach-banner strong {
+  flex: 0 0 auto;
+  font-size: 13px;
+}
+.coach-banner p {
+  margin: 0;
+  color: #3f5349;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.coach-banner .save-button {
+  flex: 0 0 auto;
+}
+.replay-scrub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: #3f5349;
+  font-size: 12px;
+}
+.replay-scrub input {
+  width: 110px;
+}
+.replay-caption {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

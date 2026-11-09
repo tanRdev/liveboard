@@ -286,6 +286,7 @@ export default function Inspector({
             </div>
             <button
               className="icon-button"
+              aria-label="Remove component"
               title="Remove component"
               onClick={onRemove}
             >

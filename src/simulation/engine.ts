@@ -204,7 +204,7 @@ export function initialSnapshot(): Snapshot {
       totalDuration: 0,
       totalWait: 0,
     },
-    traffic: { running: false, rate: 5, path: "/users/1" },
+    traffic: { running: false, rate: 1, path: "/users/1" },
     backends: {},
     transit: [],
   };

@@ -7,6 +7,7 @@ import {
   Download,
   CheckCheck,
   CircleHelp,
+  Link2,
 } from "lucide-react";
 type Props = {
   title: string;
@@ -17,6 +18,7 @@ type Props = {
   onImport: () => void;
   onExport: () => void;
   onSave: () => void;
+  onShare: () => void;
   onHelp: () => void;
 };
 export default function BoardMenu(props: Props) {
@@ -97,6 +99,10 @@ export default function BoardMenu(props: Props) {
           <button onClick={() => action(props.onSave)}>
             <CheckCheck size={15} />
             Save on this device
+          </button>
+          <button onClick={() => action(props.onShare)}>
+            <Link2 size={15} />
+            Copy share link
           </button>
           <hr />
           <button onClick={() => action(props.onHelp)}>

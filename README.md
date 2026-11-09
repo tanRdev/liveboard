@@ -12,15 +12,32 @@ A visual system design workbench with executable diagrams, traffic experiments, 
 ![Next.js](https://img.shields.io/badge/Next.js-000000?style=flat-square&logo=nextdotjs&logoColor=white)
 [![MIT license](https://img.shields.io/badge/License-MIT-2d8b67?style=flat-square)](LICENSE)
 
-[Get started](#get-started) · [Try a scenario](#try-a-scenario) · [How it works](#how-it-works) · [Development](#development)
+[Try it](https://liveboard-eight.vercel.app) · [Get started](#get-started) · [Try a scenario](#try-a-scenario) · [How it works](#how-it-works) · [Development](#development)
 
 </div>
 
 ---
 
+**[Open the live app](https://liveboard-eight.vercel.app).** No account and no API keys.
+
 Liveboard turns a system diagram into a running simulation. Connect a client to a backend, add a cache and database, then follow a request through the system. Change the settings and measure the effect.
 
 Use it to explore a design, practice an interview, or build an exercise for someone else.
+
+<img src="public/readme/first-visit.png" width="880" alt="A cache-aside board on first visit, with a short prompt to send the first request." />
+
+## Four steps
+
+1. Open Liveboard. A new browser starts on the cache-aside template. Templates stay open in the Add panel, and an existing saved board is left as you left it.
+2. Send `GET /users/1`. The backend misses the cache, reads the database, and stores the record.
+3. Send it again. The second request is a cache hit.
+4. Open **Run**, then **Traffic**. One request per second fits the default backend. The slider says when a faster rate will queue before anything fails.
+
+<img src="public/readme/run-panel.png" width="880" alt="Opening Run keeps each card at full size instead of zooming the diagram out. Fit brings the whole board into the space above the panel." />
+
+Pause with Space and scrub **Replay** to walk that request along the edges. After an interview experiment, choose **Watch on the board** to play the trace on the diagram. Press F to present. Copy a share link from the Board menu. The link is a compressed board in the URL hash.
+
+<img src="public/readme/watch-replay.png" width="880" alt="An experiment trace replayed on the diagram, lighting the cache and database edges." />
 
 ## What you can do
 
@@ -31,7 +48,7 @@ Use it to explore a design, practice an interview, or build an exercise for some
 - **Solve incidents.** Diagnose broken starter systems and verify a fix against traffic objectives and resource limits.
 - **Prepare an interview.** Record requirements and design decisions, estimate capacity, and export an HTML report with measured evidence.
 
-Your workspace saves in your browser. Download boards as JSON, then open them again or drag them onto the workspace. Exercises and submissions are portable files too. No account or API keys are required.
+Your workspace saves in this browser. Two tabs coordinate through a storage lock and show a conflict when both have unsaved edits. Download boards as JSON, copy a share link, or drop a file onto the workspace. Exercises and submissions are portable files too. No account or API keys are required.
 
 ## Get started
 
@@ -44,14 +61,9 @@ npm run dev
 
 Open [localhost:5173](http://localhost:5173).
 
-For a first run:
+A new browser opens the cache-aside board. Send `/users/1`, send it again, then open **Run**.
 
-1. Open **Add**, expand **Templates**, and select **Cache-aside API**.
-2. Send a request to `/users/1`. Inspect the trace as the backend reads the database and fills the cache.
-3. Send the request again to see a cache hit.
-4. Select a component to change its settings. Open **Run** to inspect execution and generate traffic.
-
-Press `/` to search for components. Press `Escape` to hide panels. Use the Board menu to save or open files.
+Press `/` to search for components. Space pauses, period steps, Backspace deletes the selection, and Ctrl/Cmd+Z undoes that delete. F presents the board. Escape hides panels. Use the Board menu to save, copy a share link, or open a file.
 
 ## Try a scenario
 
