@@ -40,6 +40,7 @@ type Props = {
   runs: RecordedRun[];
   onRun: (spec: ExperimentSpec) => void;
   onCancel: () => void;
+  onWatch: (report: ExperimentReport) => void;
   path: string;
   currentConfig: Board["config"];
 };
@@ -479,7 +480,8 @@ function ExperimentResults({
   runs,
   brief,
   currentConfig,
-}: Pick<Props, "runs" | "brief" | "currentConfig">) {
+  onWatch,
+}: Pick<Props, "runs" | "brief" | "currentConfig" | "onWatch">) {
   const [selected, setSelected] = useState(""),
     [baselineId, setBaselineId] = useState("");
   const run = runs.find((r) => r.id === selected) ?? runs.at(-1),
@@ -509,6 +511,9 @@ function ExperimentResults({
         Last four runs in this session. Download a report to retain the
         evidence.
       </p>
+      <button className="watch-board" type="button" onClick={() => onWatch(report)}>
+        Watch on the board
+      </button>
       <table className="experiment-table">
         <thead>
           <tr>
@@ -697,7 +702,12 @@ export default function InterviewPanel(props: Props) {
       {tab === "Experiments" && (
         <div className="experiment-layout">
           <ExperimentForm {...props} />
-          <ExperimentResults {...props} />
+          <ExperimentResults
+            runs={props.runs}
+            brief={props.brief}
+            currentConfig={props.currentConfig}
+            onWatch={props.onWatch}
+          />
         </div>
       )}
     </div>

@@ -1,4 +1,14 @@
 /* Interview workspace and failure experiments. */
+.watch-board {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: #287451;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
 .interview-selected {
   color: #3d7548 !important;
   background: #edf3e7;

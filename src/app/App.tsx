@@ -57,8 +57,10 @@ import {
   type Config,
   type Role,
   type Snapshot,
+  type Trace,
 } from "../simulation/engine";
 import TrafficPanel from "../labs/TrafficPanel";
+import { missBudgetMs } from "../labs/capacity";
 import { ComponentNode, TrafficEdge } from "../board/BoardNodes";
 import {
   catalog,
@@ -69,9 +71,11 @@ import {
   serializeBoard,
   parseBoard,
   executionConfig,
+  topologyKey,
   type Board,
   type Scenario,
 } from "../board/board";
+import { experimentFrames, focusedTransit } from "../board/replay";
 import { checkoutScenario } from "../scenarios/checkout";
 import { icons } from "../board/visuals";
 import { technology } from "../simulation/settings";
@@ -106,10 +110,11 @@ import {
   WORKSPACE_KEY,
   discardRecovery,
   loadStoredWorkspace,
-  planWorkspaceWrite,
   workspaceBody,
   workspaceContent,
 } from "./persistence";
+import { boardShareUrl, decodeBoardLink, encodeBoardLink } from "./share";
+import { browserStorageLock, commitLockedWrite } from "./storageLock";
 import ExecutionResizeHandle from "../board/ExecutionResizeHandle";
 const ChallengePanel = lazy(() => import("../challenges/ChallengePanel"));
 const InterviewPanel = lazy(() => import("../interview/InterviewPanel"));
@@ -149,16 +154,18 @@ function App() {
     }
   });
   const saved = boot.status === "ok" ? boot.workspace : undefined;
-  const [empty] = useState(() => scenario("empty"));
-  const [nodes, setNodes, onNodesChange] = useNodesState(
-    saved?.board.nodes ?? empty.nodes,
+  const [starter] = useState(() =>
+    boot.status === "ok"
+      ? boot.workspace.board
+      : boot.status === "empty"
+        ? scenario("cache")
+        : scenario("empty"),
   );
-  const [edges, setEdges, onEdgesChange] = useEdgesState(
-    saved?.board.edges ?? empty.edges,
-  );
+  const [nodes, setNodes, onNodesChange] = useNodesState(starter.nodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(starter.edges);
   const [config, setConfig] = useState<Config>({
     ...defaults,
-    ...saved?.board.config,
+    ...starter.config,
   });
   const [brief, setBrief] = useState<InterviewBrief>(
     () => saved?.board.interview ?? structuredClone(defaultBrief),
@@ -173,13 +180,23 @@ function App() {
   const pendingRun = useRef<{ id: string; board: Board } | undefined>(
     undefined,
   );
-  const [title, setTitle] = useState(saved?.board.title ?? empty.title);
+  const [title, setTitle] = useState(starter.title);
   const [state, setState] = useState<Snapshot>(initialSnapshot);
   const [selection, setSelection] = useState("");
   const [search, setSearch] = useState("");
   const [path, setPath] = useState("/users/1");
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
+  const [scrub, setScrub] = useState<number | null>(null);
+  const [watch, setWatch] = useState<{
+    frames: Trace[];
+    index: number;
+    name: string;
+  } | null>(null);
+  const [focusMode, setFocusMode] = useState(false);
+  const [showCoach, setShowCoach] = useState(
+    () => boot.status === "empty" && !location.hash.replace(/^#/, "").startsWith("v1"),
+  );
   const [tab, setTab] = useState("Requests");
   const [requestId, setRequestId] = useState<number | null>(null);
   const [toast, setToast] = useState("");
@@ -222,6 +239,18 @@ function App() {
   const helpDialog = useRef<HTMLDialogElement>(null);
   const [traffic, setTraffic] = useState(1);
   const flow = useRef<ReactFlowInstance | null>(null);
+  const undoPast = useRef<
+    { nodes: Node[]; edges: Edge[]; config: Config; title: string }[]
+  >([]);
+  const commandRef = useRef({
+    togglePlay: () => {},
+    step: () => {},
+    remove: () => {},
+    undo: () => {},
+    toggleFocus: () => {},
+  });
+  const channelRef = useRef<BroadcastChannel | null>(null);
+  const tabOrigin = useRef("");
   const worker = useRef<Worker | null>(null);
   const message = (type: string, extra = {}) =>
     worker.current?.postMessage({ type, ...extra });
@@ -276,6 +305,10 @@ function App() {
     };
     return () => w.terminate();
   }, []);
+  const topology = useMemo(
+    () => topologyKey(nodes, edges, config),
+    [nodes, edges, config],
+  );
   useEffect(() => {
     message("configure", {
       config: {
@@ -289,32 +322,7 @@ function App() {
         links: edges.map((e) => `${e.source}-${e.target}`),
       },
     });
-  }, [config, nodes, edges]);
-  useEffect(() => {
-    const viewport = document.querySelector<HTMLElement>(".board-viewport");
-    if (!viewport) return;
-    let previous = viewport.getBoundingClientRect();
-    let frame = 0;
-    const observer = new ResizeObserver(() => {
-      const next = viewport.getBoundingClientRect();
-      if (
-        Math.abs(next.width - previous.width) < 1 &&
-        Math.abs(next.height - previous.height) < 1
-      )
-        return;
-      previous = next;
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        if (flow.current?.getNodes().length)
-          void flow.current.fitView({ padding: 0.16, duration: 120 });
-      });
-    });
-    observer.observe(viewport);
-    return () => {
-      observer.disconnect();
-      cancelAnimationFrame(frame);
-    };
-  }, []);
+  }, [topology]);
   useEffect(() => {
     if (help) helpDialog.current?.showModal();
     else helpDialog.current?.close();
@@ -349,14 +357,53 @@ function App() {
         dragDepth.current = 0;
         setPanel(null);
         setWorkspaceExpanded(false);
+        setWatch(null);
+        setScrub(null);
       }
       const target = event.target as HTMLElement;
+      const typing = target.closest(
+        'input,textarea,select,[contenteditable="true"]',
+      );
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        commandRef.current.undo();
+        return;
+      }
+      if (typing || target.closest("button, a")) return;
+      if (event.key === " " && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        commandRef.current.togglePlay();
+        return;
+      }
+      if (event.key === "." && !event.metaKey && !event.ctrlKey) {
+        event.preventDefault();
+        commandRef.current.step();
+        return;
+      }
+      if (
+        (event.key === "Backspace" || event.key === "Delete") &&
+        !event.metaKey &&
+        !event.ctrlKey
+      ) {
+        event.preventDefault();
+        commandRef.current.remove();
+        return;
+      }
+      if (
+        event.key.toLowerCase() === "f" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        commandRef.current.toggleFocus();
+        return;
+      }
       if (
         event.key === "/" &&
         !event.metaKey &&
         !event.ctrlKey &&
-        !event.altKey &&
-        !target.closest('input,textarea,select,[contenteditable="true"]')
+        !event.altKey
       ) {
         event.preventDefault();
         setPanel("components");
@@ -397,9 +444,16 @@ function App() {
   const traceResult = state.results.find(
     (request) => request.id === traceRequest,
   );
-  const events =
-    traceResult?.trace ??
-    state.events.filter((event) => event.request === traceRequest);
+  const events = traceResult?.trace?.length
+    ? traceResult.trace
+    : state.events.filter((event) => event.request === traceRequest);
+  const watchFrame =
+    watch && watch.index < watch.frames.length
+      ? watch.frames[watch.index]
+      : undefined;
+  const scrubFrame = scrub != null ? events[scrub] : undefined;
+  const focusEvent = watchFrame ?? scrubFrame;
+  const focusEdge = focusedTransit(focusEvent);
   const tracePath =
     traceResult?.path ??
     events.find((event) => event.text.startsWith("GET "))?.text.split(" ")[1] ??
@@ -445,7 +499,7 @@ function App() {
     }),
     [nodes, edges, config, title, brief, game.active, game.draft, game.view],
   );
-  const writeLocal = useCallback(() => {
+  const writeLocal = useCallback(async () => {
     try {
       if (blockWrites.current) {
         setSaveStatus("Not saved");
@@ -458,29 +512,19 @@ function App() {
         workspaceDraft(),
         previousWorkspace.current,
       );
-      const stored = localStorage.getItem(WORKSPACE_KEY);
-      if (stored && workspaceBody(stored) === workspaceBody(nextText)) {
-        const revision = planWorkspaceWrite({
-          baseRevision: baseRevision.current,
-          storedText: stored,
-          nextText,
-        });
-        if (revision.action === "adopt") {
-          baseRevision.current = revision.revision;
-          lastBody.current = workspaceBody(stored);
-          setSaveStatus("Saved");
-          setSaveError("");
-          return true;
-        }
-      }
-      const decision = planWorkspaceWrite({
+      const decision = await commitLockedWrite({
+        storage: localStorage,
         baseRevision: baseRevision.current,
-        storedText: stored,
         nextText,
         blockWrites: blockWrites.current,
+        lock:
+          document.visibilityState === "hidden"
+            ? (run) => Promise.resolve(run())
+            : browserStorageLock,
       });
       if (decision.action === "adopt") {
         baseRevision.current = decision.revision;
+        const stored = localStorage.getItem(WORKSPACE_KEY);
         lastBody.current = workspaceBody(stored ?? nextText);
         setSaveStatus("Saved");
         setSaveError("");
@@ -501,12 +545,16 @@ function App() {
         );
         return false;
       }
-      localStorage.setItem(WORKSPACE_KEY, decision.text);
       baseRevision.current = decision.revision;
       lastBody.current = workspaceBody(decision.text);
       previousWorkspace.current = parseWorkspace(decision.text);
       setSaveStatus("Saved");
       setSaveError("");
+      channelRef.current?.postMessage({
+        origin: tabOrigin.current,
+        type: "workspace",
+        text: decision.text,
+      });
       return true;
     } catch (error) {
       setSaveStatus("Not saved");
@@ -519,11 +567,9 @@ function App() {
       );
       return false;
     }
-    // workspaceDraft reads the latest render state captured by localDocument.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localDocument]);
   useEffect(() => {
-    let text = "";
+    let text: string;
     try {
       text = serializeWorkspace(workspaceDraft(), previousWorkspace.current);
     } catch (error) {
@@ -567,29 +613,28 @@ function App() {
     };
   }, [localDocument, writeLocal]);
   useEffect(() => {
-    const onStorage = (event: StorageEvent) => {
-      if (event.key !== WORKSPACE_KEY || !event.newValue) return;
+    const applyRemote = (text: string) => {
       let remote: LocalWorkspace;
       try {
-        remote = parseWorkspace(event.newValue);
+        remote = parseWorkspace(text);
       } catch {
         return;
       }
-      const remoteBody = workspaceBody(event.newValue);
+      const remoteBody = workspaceBody(text);
       if (remote.revision !== undefined && remote.revision < baseRevision.current)
         return;
       if (remoteBody === lastBody.current) {
         baseRevision.current = remote.revision ?? baseRevision.current;
         return;
       }
-      let localText = "";
+      let localText: string;
       try {
         localText = serializeWorkspace(
           sessionRef.current.draft(),
           previousWorkspace.current,
         );
       } catch {
-        setConflictText(event.newValue);
+        setConflictText(text);
         return;
       }
       if (workspaceBody(localText) === lastBody.current) {
@@ -597,7 +642,7 @@ function App() {
         baseRevision.current = remote.revision ?? 0;
         lastBody.current = remoteBody;
         echoing.current = true;
-        echoContent.current = workspaceContent(event.newValue);
+        echoContent.current = workspaceContent(text);
         sessionRef.current.loadBoard(remote.board);
         sessionRef.current.restore({
           active: remote.active,
@@ -607,13 +652,35 @@ function App() {
         setConflictText("");
         return;
       }
-      setConflictText(event.newValue);
+      setConflictText(text);
     };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== WORKSPACE_KEY || !event.newValue) return;
+      applyRemote(event.newValue);
+    };
+    let channel: BroadcastChannel | undefined;
+    if (typeof BroadcastChannel !== "undefined") {
+      tabOrigin.current = crypto.randomUUID();
+      channel = new BroadcastChannel("liveboard-storage");
+      channelRef.current = channel;
+      channel.onmessage = (event: MessageEvent) => {
+        const data = event.data as { origin?: string; type?: string; text?: string };
+        if (!data || data.origin === tabOrigin.current || data.type !== "workspace")
+          return;
+        if (typeof data.text === "string") applyRemote(data.text);
+      };
+    }
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      channel?.close();
+      if (channelRef.current === channel) channelRef.current = null;
+    };
   }, []);
   const save = () => {
-    if (writeLocal()) setToast("Workspace saved in this browser");
+    void writeLocal().then((saved) => {
+      if (saved) setToast("Workspace saved in this browser");
+    });
   };
   const add = (role: Role, position?: { x: number; y: number }) => {
     let id: string = role;
@@ -776,7 +843,9 @@ function App() {
       tech: technology(n.data.role as Role, config),
       state,
       config,
-      active: state.active && state.events.at(-1)?.component === n.id,
+      active: focusEvent
+        ? focusEvent.component === n.id
+        : state.active && state.events.at(-1)?.component === n.id,
       requestPath: path,
       targets: edges
         .filter((edge) => edge.source === "balancer")
@@ -784,14 +853,18 @@ function App() {
     },
   }));
   const renderedEdges: Edge[] = edges.map((edge) => {
-    const traffic = state.transit.filter((message) => message.edge === edge.id);
+    const traffic = focusEdge
+      ? edge.id === focusEdge.edge
+        ? [{ reverse: focusEdge.reverse }]
+        : []
+      : state.transit.filter((message) => message.edge === edge.id);
     const forward = traffic.filter((message) => !message.reverse).length;
     const backward = traffic.length - forward;
     const active = traffic.length > 0;
     return {
       ...edge,
       type: "traffic",
-      data: { forward, backward, playing },
+      data: { forward, backward, playing: Boolean(focusEdge) || playing },
       animated: active,
       className: active ? "edge-active" : "",
       style: {
@@ -820,7 +893,9 @@ function App() {
     if (!canReplaceUnreadable) return;
     blockWrites.current = false;
     lastBody.current = "";
-    if (writeLocal()) setSaveError("");
+    void writeLocal().then((saved) => {
+      if (saved) setSaveError("");
+    });
   };
   const discardSavedCopy = () => {
     if (!recoveryDownloaded) return;
@@ -866,8 +941,187 @@ function App() {
       return;
     }
     setConflictText("");
-    writeLocal();
+    void writeLocal();
   };
+  useEffect(() => {
+    if (!watch || watch.index >= watch.frames.length) return;
+    const timer = window.setTimeout(() => {
+      setWatch((current) => {
+        if (!current) return current;
+        if (current.index + 1 >= current.frames.length) return null;
+        return { ...current, index: current.index + 1 };
+      });
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [watch]);
+  useEffect(() => {
+    const token = location.hash.replace(/^#/, "");
+    if (!token.startsWith("v1")) return;
+    let cancel = false;
+    void decodeBoardLink(token)
+      .then((text) => {
+        if (cancel) return;
+        loadBoard(parseBoard(text));
+        setShowCoach(false);
+        setToast("Opened shared board");
+        history.replaceState(null, "", `${location.pathname}${location.search}`);
+      })
+      .catch((error: unknown) => {
+        if (!cancel)
+          setToast(
+            error instanceof Error
+              ? error.message
+              : "This board link could not be opened.",
+          );
+      });
+    return () => {
+      cancel = true;
+    };
+  }, []);
+  const remember = () => {
+    undoPast.current = [
+      ...undoPast.current.slice(-19),
+      {
+        nodes: nodes.map((node) => ({
+          id: node.id,
+          type: node.type,
+          position: { ...node.position },
+          data: {
+            role: node.data.role,
+            name: node.data.name,
+            tech: node.data.tech,
+          },
+        })),
+        edges: edges.map((edge) => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+        })),
+        config: structuredClone(config),
+        title,
+      },
+    ];
+  };
+  const undo = () => {
+    const snap = undoPast.current.pop();
+    if (!snap) {
+      setToast("Nothing to undo");
+      return;
+    }
+    setNodes(snap.nodes);
+    setEdges(snap.edges);
+    setConfig(snap.config);
+    setTitle(snap.title);
+    setSelection("");
+    setToast("Undid the last change");
+  };
+  const removeSelection = () => {
+    if (!selection) return;
+    remember();
+    if (edges.some((edge) => edge.id === selection)) {
+      setEdges((current) => current.filter((edge) => edge.id !== selection));
+      setSelection("");
+      return;
+    }
+    setConfig((current) => {
+      const backendOverrides = { ...current.backendOverrides };
+      delete backendOverrides[selection];
+      const resilienceOverrides = { ...current.resilienceOverrides };
+      const connectionOverrides = { ...current.connectionOverrides };
+      delete resilienceOverrides[selection];
+      delete connectionOverrides[`${selection}-database`];
+      const serviceOverrides = { ...current.serviceOverrides };
+      delete serviceOverrides[selection];
+      const consumerOverrides = { ...current.consumerOverrides };
+      const workerOverrides = { ...current.workerOverrides };
+      delete consumerOverrides[selection];
+      delete workerOverrides[selection];
+      return {
+        ...current,
+        backendOverrides,
+        consumerOverrides,
+        workerOverrides,
+        resilienceOverrides,
+        connectionOverrides,
+        serviceOverrides,
+      };
+    });
+    setNodes((current) => current.filter((node) => node.id !== selection));
+    setEdges((current) =>
+      current.filter(
+        (edge) => edge.source !== selection && edge.target !== selection,
+      ),
+    );
+    setSelection("");
+  };
+  const togglePlay = () => {
+    setWatch(null);
+    setScrub(null);
+    setPlaying((current) => {
+      message("play", { value: current ? 0 : 1 });
+      return !current;
+    });
+  };
+  const stepSimulation = () => {
+    setWatch(null);
+    setScrub(null);
+    setPlaying(false);
+    message("play", { value: 0 });
+    message("step");
+  };
+  const toggleFocus = () => {
+    setFocusMode((current) => {
+      if (!current) {
+        setPanel(null);
+        setWorkspaceExpanded(false);
+      }
+      return !current;
+    });
+  };
+  const shareBoard = () => {
+    void (async () => {
+      try {
+        const token = await encodeBoardLink(serializeBoard(boardDocument()));
+        const url = boardShareUrl(location.origin, location.pathname, token);
+        try {
+          await navigator.clipboard.writeText(url);
+          setToast("Share link copied");
+        } catch {
+          history.replaceState(
+            null,
+            "",
+            `${location.pathname}${location.search}#${token}`,
+          );
+          setToast("Share link is in the address bar");
+        }
+      } catch (error) {
+        setToast(
+          error instanceof Error ? error.message : "Could not create a share link",
+        );
+      }
+    })();
+  };
+  const watchReport = (report: ExperimentReport) => {
+    const frames = experimentFrames(report);
+    if (!frames.length) {
+      setToast("This run has no request trace to watch");
+      return;
+    }
+    setPlaying(false);
+    message("play", { value: 0 });
+    setScrub(null);
+    setPanel(null);
+    setWorkspaceExpanded(false);
+    setWatch({ frames, index: 0, name: report.spec.name });
+  };
+  commandRef.current = {
+    togglePlay,
+    step: stepSimulation,
+    remove: removeSelection,
+    undo,
+    toggleFocus,
+  };
+  const coachStep = state.hits > 0 ? 2 : state.metrics.completed > 0 ? 1 : 0;
   return (
     <div
       onDragEnter={(event) => {
@@ -904,7 +1158,7 @@ function App() {
             !executionCollapsed && !workspaceExpanded ? executionSize : "0px",
         } as CSSProperties
       }
-      className={`app-shell board-shell ${playing ? "" : "simulation-paused"} ${!libraryVisible ? "library-hidden" : ""} ${!inspectorVisible ? "inspector-hidden" : ""} ${!executionCollapsed && !workspaceExpanded ? "execution-open" : ""}`}
+      className={`app-shell board-shell ${focusMode ? "focus-mode" : ""} ${playing ? "" : "simulation-paused"} ${!libraryVisible ? "library-hidden" : ""} ${!inspectorVisible ? "inspector-hidden" : ""} ${!executionCollapsed && !workspaceExpanded ? "execution-open" : ""}`}
     >
       <BoardMenu
         title={title}
@@ -915,6 +1169,7 @@ function App() {
         onImport={() => fileInput.current?.click()}
         onExport={exportBoard}
         onSave={save}
+        onShare={shareBoard}
         onHelp={() => setHelp(true)}
       />
       <input
@@ -996,7 +1251,7 @@ function App() {
                   })}
               </section>
             ))}
-            <details className="board-templates">
+            <details className="board-templates" open>
               <summary>Templates</summary>
               <button
                 onClick={() => {
@@ -1114,6 +1369,8 @@ function App() {
               <span className="tool-divider" />
               <button
                 className={`board-tool ${!executionCollapsed && tab === "Challenges" ? "selected" : ""}`}
+                aria-label="Incident challenges"
+                aria-expanded={!executionCollapsed && tab === "Challenges"}
                 onClick={() =>
                   !executionCollapsed && tab === "Challenges"
                     ? setPanel(null)
@@ -1126,6 +1383,8 @@ function App() {
               </button>
               <button
                 className={`board-tool ${!executionCollapsed && tab === "Interview" ? "selected" : ""}`}
+                aria-label="Interview workspace"
+                aria-expanded={!executionCollapsed && tab === "Interview"}
                 onClick={() =>
                   !executionCollapsed && tab === "Interview"
                     ? setPanel(null)
@@ -1153,6 +1412,15 @@ function App() {
                 onClick={() => flow.current?.fitView({ padding: 0.12 })}
               >
                 <Expand size={17} />
+              </button>
+              <button
+                className="icon-button"
+                aria-label={focusMode ? "Exit present mode" : "Present the board"}
+                aria-pressed={focusMode}
+                title="Present (F)"
+                onClick={toggleFocus}
+              >
+                <PanelLeftClose size={17} />
               </button>
               <button
                 className="icon-button"
@@ -1197,7 +1465,7 @@ function App() {
                 onInit={(instance) => {
                   flow.current = instance;
                 }}
-                fitView={Boolean(saved?.board.nodes.length)}
+                fitView={starter.nodes.length > 0}
                 onNodeClick={(_, node) => {
                   setSelection(node.id);
                   setPanel("inspector");
@@ -1237,6 +1505,54 @@ function App() {
                 )}
               </ReactFlow>
             </div>
+            {showCoach && nodes.length > 0 && (
+              <div className="coach-banner" role="status">
+                <strong>
+                  {coachStep === 0
+                    ? "1 · Send this request"
+                    : coachStep === 1
+                      ? "2 · Send it again"
+                      : "3 · Open traffic"}
+                </strong>
+                <p>
+                  {coachStep === 0
+                    ? "The first GET /users/1 misses the cache, reads the database, and stores the record."
+                    : coachStep === 1
+                      ? "The second request should be a cache hit. The database stays quiet."
+                      : "Open Run, then Traffic. One request per second fits this backend. Faster rates queue before they fail."}
+                </p>
+                <button
+                  className="save-button"
+                  onClick={() => {
+                    if (coachStep < 2) {
+                      message("send", { path, count: 1 });
+                      setRequestId(null);
+                      return;
+                    }
+                    selectExecutionTab("Traffic");
+                    setShowCoach(false);
+                  }}
+                >
+                  {coachStep === 2 ? "Open traffic" : "Send"}
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label="Dismiss introduction"
+                  onClick={() => setShowCoach(false)}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+            {watch && (
+              <div className="coach-banner watching" role="status">
+                <strong>Watching {watch.name}</strong>
+                <p>{watchFrame?.text ?? "Replay finished"}</p>
+                <button className="save-button" onClick={() => setWatch(null)}>
+                  Stop
+                </button>
+              </div>
+            )}
             {!nodes.length && !panel && (
               <div className="empty-board">
                 <Layers size={32} />
@@ -1327,21 +1643,14 @@ function App() {
                 <button
                   aria-label={playing ? "Pause simulation" : "Play simulation"}
                   className="icon-button"
-                  onClick={() => {
-                    setPlaying(!playing);
-                    message("play", { value: +!playing });
-                  }}
+                  onClick={togglePlay}
                 >
                   {playing ? <Pause size={14} /> : <Play size={14} />}
                 </button>
                 <button
                   aria-label="Step simulation"
                   className="icon-button"
-                  onClick={() => {
-                    setPlaying(false);
-                    message("play", { value: 0 });
-                    message("step");
-                  }}
+                  onClick={stepSimulation}
                 >
                   <SkipForward size={15} />
                 </button>
@@ -1488,6 +1797,7 @@ function App() {
                     currentConfig={executionConfig(boardDocument())}
                     onRun={runExperiment}
                     onCancel={cancelExperiment}
+                    onWatch={watchReport}
                     onLoadBrief={(id) => {
                       const item = briefs.find((b) => b.id === id);
                       if (!item) return;
@@ -1545,6 +1855,7 @@ function App() {
                     )
                     .map((edge) => edge.target)}
                   paused={!playing}
+                  missMs={missBudgetMs(config.delay)}
                   onTraffic={(rate, requestPath, running) =>
                     message("traffic", {
                       value: rate,
@@ -1691,12 +2002,7 @@ function App() {
               target={selectedEdge.target}
               config={config}
               onConfig={setConfig}
-              onRemove={() => {
-                setEdges((current) =>
-                  current.filter((edge) => edge.id !== selectedEdge.id),
-                );
-                setSelection("");
-              }}
+              onRemove={removeSelection}
             />
           ) : (
             <Inspector
@@ -1718,39 +2024,7 @@ function App() {
                   ),
                 )
               }
-              onRemove={() => {
-                setConfig((current) => {
-                  const backendOverrides = { ...current.backendOverrides };
-                  delete backendOverrides[selection];
-                  const resilienceOverrides = {
-                      ...current.resilienceOverrides,
-                    },
-                    connectionOverrides = { ...current.connectionOverrides };
-                  delete resilienceOverrides[selection];
-                  delete connectionOverrides[`${selection}-database`];
-                  const serviceOverrides = { ...current.serviceOverrides };
-                  delete serviceOverrides[selection];
-                  const consumerOverrides = { ...current.consumerOverrides },
-                    workerOverrides = { ...current.workerOverrides };
-                  delete consumerOverrides[selection];
-                  delete workerOverrides[selection];
-                  return {
-                    ...current,
-                    backendOverrides,
-                    consumerOverrides,
-                    workerOverrides,
-                    resilienceOverrides,
-                    connectionOverrides,
-                    serviceOverrides,
-                  };
-                });
-                setNodes((ns) => ns.filter((n) => n.id !== selection));
-                setEdges((es) =>
-                  es.filter(
-                    (e) => e.source !== selection && e.target !== selection,
-                  ),
-                );
-              }}
+              onRemove={removeSelection}
               onMessage={message}
             />
           )}
@@ -1762,10 +2036,7 @@ function App() {
             className="icon-button"
             aria-label={playing ? "Pause simulation" : "Play simulation"}
             title={playing ? "Pause simulation" : "Play simulation"}
-            onClick={() => {
-              setPlaying(!playing);
-              message("play", { value: +!playing });
-            }}
+            onClick={togglePlay}
           >
             {playing ? <Pause size={16} /> : <Play size={16} />}
           </button>
@@ -1773,14 +2044,26 @@ function App() {
             className="icon-button"
             aria-label="Step simulation"
             title="Step simulation"
-            onClick={() => {
-              setPlaying(false);
-              message("play", { value: 0 });
-              message("step");
-            }}
+            onClick={stepSimulation}
           >
             <SkipForward size={16} />
           </button>
+          {!playing && !watch && events.length > 1 && (
+            <label className="replay-scrub">
+              <span>Replay</span>
+              <input
+                type="range"
+                min={0}
+                max={events.length - 1}
+                value={scrub ?? events.length - 1}
+                aria-label="Replay request along the diagram"
+                onChange={(event) => setScrub(Number(event.target.value))}
+              />
+              <span className="replay-caption">
+                {focusEvent?.text ?? events.at(-1)?.text}
+              </span>
+            </label>
+          )}
           <span className="quick-clock">{(state.now / 1000).toFixed(1)}s</span>
           <span className="tool-divider" />
           {hasClient ? (
@@ -1945,11 +2228,20 @@ function App() {
             Pause or step execution to inspect a decision. Orange arrows show
             requests. Blue arrows show responses.
           </li>
-          <li>Press Escape to hide panels. Toggle Map to show the minimap.</li>
           <li>
-            Changes save in this browser. Use the Board menu to download a copy
-            or open a file. Drop a board, exercise, or submission file anywhere
-            on the workspace.
+            Space pauses. Period steps. Backspace deletes the selection.
+            Ctrl+Z or Cmd+Z undoes a delete. F presents the board. Escape hides
+            panels.
+          </li>
+          <li>
+            While paused, Replay on the bottom bar walks a request along its
+            edges. After an interview experiment, Watch on the board plays that
+            trace.
+          </li>
+          <li>
+            Changes save in this browser. Copy a share link from the Board menu,
+            or download a file. Drop a board, exercise, or submission file
+            anywhere on the workspace.
           </li>
         </ul>
         <button className="save-button" onClick={() => setHelp(false)}>

@@ -10,7 +10,8 @@
     "preview": "npm run start",
     "check": "npm test && npm run build",
     "start": "node .next/standalone/server.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@xyflow/react": "^12.9.0",
@@ -20,10 +21,14 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "26.6.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "eslint": "^10.14.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "typescript": "~5.7.2",
+    "typescript-eslint": "^8.72.2",
     "vitest": "^5.0.5"
   },
   "engines": {

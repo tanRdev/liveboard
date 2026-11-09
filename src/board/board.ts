@@ -277,6 +277,17 @@ export function scenario(kind: Scenario): Board {
   board.config.links = board.edges.map((e) => e.id);
   return board;
 }
+export function topologyKey(
+  nodes: { id: string; data?: { role?: unknown; name?: unknown } }[],
+  edges: { source: string; target: string }[],
+  config: Config,
+): string {
+  return JSON.stringify({
+    nodes: nodes.map((node) => [node.id, node.data?.role, node.data?.name]),
+    links: edges.map((edge) => `${edge.source}-${edge.target}`),
+    config,
+  });
+}
 export function executionConfig(board: Board): Config {
   return {
     ...board.config,

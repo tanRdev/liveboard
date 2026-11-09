@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseBoard, serializeBoard, scenario } from "./board";
+import { parseBoard, serializeBoard, scenario, topologyKey } from "./board";
 describe("board documents", () => {
   it.each(["empty", "cache", "balanced"] as const)(
     "round-trips the %s board without transient state",
@@ -71,6 +71,23 @@ describe("board documents", () => {
     const raw = JSON.parse(serializeBoard(scenario("cache")));
     mutate(raw);
     expect(() => parseBoard(JSON.stringify(raw))).toThrow();
+  });
+  it("ignores node position when deciding whether the engine must reconfigure", () => {
+    const board = scenario("cache");
+    const moved = board.nodes.map((node) => ({
+      ...node,
+      position: { x: node.position.x + 40, y: node.position.y },
+    }));
+    expect(topologyKey(moved, board.edges, board.config)).toBe(
+      topologyKey(board.nodes, board.edges, board.config),
+    );
+    expect(
+      topologyKey(
+        board.nodes,
+        [...board.edges, { ...board.edges[0], source: "cache", target: "client" }],
+        board.config,
+      ),
+    ).not.toBe(topologyKey(board.nodes, board.edges, board.config));
   });
   it("rejects oversized and malformed input", () => {
     expect(() => parseBoard("x".repeat(1_000_001))).toThrow(/1 MB/);

@@ -1,3 +1,4 @@
+import { writeProgress } from "../app/storageLock";
 import { challengeCatalog } from "./challengeCatalog";
 import { useRef, useState, useEffect } from "react";
 import { parseBoard, serializeBoard, type Board } from "../board/board";
@@ -75,11 +76,19 @@ export default function useChallengeSession({
   const [attempts, setAttempts] = useState(0);
   const [progress, setProgress] = useState(readProgress);
   useEffect(() => {
-    try {
-      localStorage.setItem("liveboard-progress-v1", JSON.stringify(progress));
-    } catch {
-      /* Keep session progress when device storage is full. */
-    }
+    let cancel = false;
+    void writeProgress({ storage: localStorage, local: progress })
+      .then((merged) => {
+        if (cancel) return;
+        if (JSON.stringify(merged) !== JSON.stringify(progress))
+          setProgress(merged);
+      })
+      .catch(() => {
+        /* Keep session progress when device storage is full. */
+      });
+    return () => {
+      cancel = true;
+    };
   }, [progress]);
   const [status, setStatus] = useState<ChallengeStatus>({
     running: false,

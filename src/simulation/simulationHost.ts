@@ -5,6 +5,7 @@ import {
 import type { Board } from "../board/board";
 import { ExperimentRunner, type ExperimentSpec } from "./experiments";
 import { Engine, type Config, type Snapshot } from "./engine";
+import { clockKey, slimSnapshot } from "./publish";
 
 export type SimulationCommand = {
   type: string;
@@ -28,7 +29,13 @@ export function createSimulationHost(post: (message: unknown) => void) {
   let speed = 1;
   let experiment: { id: string; runner: ExperimentRunner } | undefined;
   let challenge: { id: string; runner: ChallengeRunner } | undefined;
-  const publish = () => post({ type: "snapshot", state: engine.state });
+  let publishedKey = "";
+  const publish = () => {
+    const key = clockKey(engine.state);
+    if (key === publishedKey) return;
+    publishedKey = key;
+    post({ type: "snapshot", state: slimSnapshot(engine.state) });
+  };
   function pumpExperiment() {
     const current = experiment;
     if (!current) return;

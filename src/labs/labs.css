@@ -1,4 +1,21 @@
 /* Technology labs share the simulation clock with HTTP traffic. */
+.capacity-hint {
+  margin: 4px 0 8px;
+  color: #3f5349;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+.capacity-hint.over,
+.backlog-note {
+  color: #7a3418;
+}
+.backlog-note {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
 .lab-field {
   display: flex;
   flex-direction: column;
